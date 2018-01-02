@@ -264,6 +264,8 @@ public:
 
     /* current data */
     demux_t                 & demuxer;
+    bool                    b_seekable;
+    bool                    b_fastseekable;
 
     vlc_tick_t              i_pts;
     vlc_tick_t              i_pcr;
