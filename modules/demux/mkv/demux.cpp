@@ -623,6 +623,9 @@ bool demux_sys_t::AnalyseAllSegmentsFound( demux_t *p_demux, matroska_stream_c *
             b_l0_handled = true;
         }
 
+        if ( !b_seekable )
+            break;
+
         EbmlElement* p_l0_prev = p_l0;
 
         bool b_seekable;
