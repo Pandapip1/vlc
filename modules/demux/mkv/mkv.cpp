@@ -452,7 +452,6 @@ static int Seek( demux_t *p_demux, vlc_tick_t i_mk_date, double f_percent, virtu
 {
     demux_sys_t        *p_sys = p_demux->p_sys;
     virtual_segment_c  *p_vsegment = p_sys->p_current_vsegment;
-    matroska_segment_c *p_segment = p_vsegment->CurrentSegment();
 
     if( f_percent < 0 ) msg_Dbg( p_demux, "seek request to i_pos = %" PRId64, i_mk_date );
     else                msg_Dbg( p_demux, "seek request to %.2f%%", f_percent * 100 );
@@ -470,11 +469,6 @@ static int Seek( demux_t *p_demux, vlc_tick_t i_mk_date, double f_percent, virtu
     if( p_sys->f_duration < 0 )
     {
         msg_Warn( p_demux, "cannot seek without duration!");
-        return VLC_EGENERIC;
-    }
-    if( !p_segment )
-    {
-        msg_Warn( p_demux, "cannot seek without valid segment position");
         return VLC_EGENERIC;
     }
 
