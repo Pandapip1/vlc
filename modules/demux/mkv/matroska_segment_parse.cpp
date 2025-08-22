@@ -1455,9 +1455,7 @@ void matroska_segment_c::ParseChapters( KaxChapters *chapters )
 
 bool matroska_segment_c::ParseCluster( KaxCluster *cluster, bool b_update_start_time, ScopeMode read_fully )
 {
-    bool b_seekable;
-    vlc_stream_Control( sys.demuxer.s, STREAM_CAN_SEEK, &b_seekable );
-    if (!b_seekable)
+    if (!sys.b_seekable)
         return false;
 
     if ( !ReadMaster( *cluster, read_fully ) )
