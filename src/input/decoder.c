@@ -1566,14 +1566,13 @@ static void DecoderProcessFlush( decoder_t *p_dec )
     decoder_owner_sys_t *p_owner = p_dec->p_owner;
     decoder_t *p_packetizer = p_owner->p_packetizer;
 
-    if( p_owner->error )
-        return;
-
     if( p_packetizer != NULL && p_packetizer->pf_flush != NULL )
         p_packetizer->pf_flush( p_packetizer );
 
     if ( p_dec->pf_flush != NULL )
         p_dec->pf_flush( p_dec );
+
+    p_owner->error = false;
 
     /* flush CC sub decoders */
     if( p_owner->cc.b_supported )
