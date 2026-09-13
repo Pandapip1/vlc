@@ -347,6 +347,7 @@ struct aout_filters
         (either the scaletempo filter or a resampler) */
     filter_t *resampler; /**< The resampler */
     int resampling; /**< Current resampling (Hz) */
+    int max_resampling; /**< Bound on resampling (Hz); 0 disables it */
 
     unsigned count; /**< Number of filters */
     filter_t *tab[AOUT_MAX_FILTERS]; /**< Configured user filters
@@ -508,6 +509,7 @@ aout_filters_t *aout_FiltersNew (vlc_object_t *obj,
         return NULL;
 
     filters->rate_filter = NULL;
+    filters->max_resampling = 0;
     filters->resampler = NULL;
     filters->resampling = 0;
     filters->count = 0;
@@ -647,6 +649,21 @@ aout_filters_t *aout_FiltersNew (vlc_object_t *obj,
         msg_Err (obj, "cannot setup a resampler");
         goto error;
     }
+    if (filters->resampler != NULL)
+    {
+        /* Bound the drift correction the caller may accumulate. Kept even so
+         * that the accumulator can still reach exactly 0 in steps of the
+         * caller's adjustment and stop the resampling. */
+        int64_t permille = var_InheritInteger (obj, "aout-max-resampling");
+
+        if (permille < 0)
+            permille = 0;
+        else if (permille > 100)
+            permille = 100;
+
+        filters->max_resampling =
+            (int)((input_format.i_rate * (uint64_t)permille) / 1000) & ~1;
+    }
     if (filters->rate_filter == NULL)
         filters->rate_filter = filters->resampler;
 
@@ -681,7 +698,9 @@ void aout_FiltersDelete (vlc_object_t *obj, aout_filters_t *filters)
 
 bool aout_FiltersCanResample (aout_filters_t *filters)
 {
-    return (filters->resampler != NULL);
+    /* A zeroed bound disables drift correction by resampling entirely; the
+     * resampler itself may still be needed for plain rate conversion. */
+    return filters->resampler != NULL && filters->max_resampling > 0;
 }
 
 bool aout_FiltersAdjustResampling (aout_filters_t *filters, int adjust)
@@ -698,14 +717,12 @@ bool aout_FiltersAdjustResampling (aout_filters_t *filters, int adjust)
          * at which the drift is made up is itself proportional to the offset.
          * Since the offset is applied to the resampler's input rate, that is
          * heard as the stream playing badly out of tune for as long as the
-         * correction lasts. See AOUT_MAX_RESAMPLING_PERMILLE.
+         * correction lasts. The bound comes from the "aout-max-resampling"
+         * option; see AOUT_MAX_RESAMPLING_PERMILLE for its default.
          *
          * The bound is forced even so that the accumulator can still reach
          * exactly 0 in steps of `adjust` and stop the resampling. */
-        const unsigned nominal_rate =
-            filters->resampler->fmt_in.audio.i_rate;
-        const int max =
-            (int)((nominal_rate * AOUT_MAX_RESAMPLING_PERMILLE) / 1000) & ~1;
+        const int max = filters->max_resampling;
         int resampling = filters->resampling + adjust;
 
         if (resampling > max)
