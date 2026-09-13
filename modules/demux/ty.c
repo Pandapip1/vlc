@@ -529,7 +529,13 @@ static int Control(demux_t *p_demux, int i_query, va_list args)
         f = va_arg( args, double );
         /* msg_Dbg(p_demux, "Control - set position to %2.3f", f); */
         if (p_sys->i_stream_size != 0)
+        {
+            /* The end of file flag short circuits Demux() and nothing else
+             * ever clears it, so a seek out of the end of the file has to.
+             * The seek sets it again if it cannot reposition the stream. */
+            p_sys->eof = false;
             return ty_stream_seek_pct(p_demux, f);
+        }
         return VLC_EGENERIC;
     case DEMUX_GET_TIME:
         /* return TiVo timestamp */
@@ -543,6 +549,8 @@ static int Control(demux_t *p_demux, int i_query, va_list args)
         *va_arg(args, vlc_tick_t *) = 0;
         return VLC_SUCCESS;
     case DEMUX_SET_TIME:      /* arg is time in microsecs */
+        /* See DEMUX_SET_POSITION above. */
+        p_sys->eof = false;
         return ty_stream_seek_time(p_demux,
                                    NS_FROM_VLC_TICK(va_arg( args, vlc_tick_t )));
     case DEMUX_CAN_PAUSE:
