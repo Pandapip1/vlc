@@ -312,6 +312,10 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
                   drift);
         owner->sync.resamp_type = AOUT_RESAMPLING_UP;
         owner->sync.resamp_start_drift = +drift;
+        /* Discard a correction left over from the opposite direction: it
+         * pushes the wrong way until it has unwound, which makes the drift it
+         * is supposed to be correcting worse in the meantime. */
+        aout_FiltersAdjustResampling (owner->filters, 0);
     }
     if (drift < -AOUT_MAX_PTS_ADVANCE
      && owner->sync.resamp_type != AOUT_RESAMPLING_DOWN)
@@ -320,6 +324,8 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
                   drift);
         owner->sync.resamp_type = AOUT_RESAMPLING_DOWN;
         owner->sync.resamp_start_drift = -drift;
+        /* See above. */
+        aout_FiltersAdjustResampling (owner->filters, 0);
     }
 
     if (owner->sync.resamp_type == AOUT_RESAMPLING_NONE)
@@ -442,7 +448,13 @@ void aout_DecChangePause (audio_output_t *aout, bool paused, vlc_tick_t date)
             owner->sync.end += date;
     }
     if (owner->mixer_format.i_format)
+    {
+        /* The timing reference the correction was derived from does not
+         * survive the pause. */
+        if (paused)
+            aout_StopResampling (aout);
         aout_OutputPause (aout, paused, date);
+    }
     aout_OutputUnlock (aout);
 }
 
@@ -463,6 +475,12 @@ void aout_DecFlush (audio_output_t *aout, bool wait)
         else
             aout_FiltersFlush (owner->filters);
         aout_OutputFlush (aout, wait);
+
+        /* Drop any accumulated drift correction along with the data it was
+         * computed for. Keeping it would leave the stream resampled - and so
+         * detuned - after a flush or a seek, with the timing reference it was
+         * derived from already gone. */
+        aout_StopResampling (aout);
     }
     aout_OutputUnlock (aout);
 }
