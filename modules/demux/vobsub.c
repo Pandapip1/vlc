@@ -316,7 +316,10 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 
         case DEMUX_SET_POSITION:
             f = va_arg( args, double );
-            i64 = (int64_t) f * p_sys->i_length;
+            /* The cast binds to f, not to the product, so every position
+              * below 1.0 truncated to 0 and every seek landed on the first
+              * subtitle. */
+            i64 = (int64_t)( f * p_sys->i_length );
 
             for( i = 0; i < p_sys->i_tracks; i++ )
             {
