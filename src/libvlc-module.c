@@ -252,6 +252,16 @@ static const char *const ppsz_mix_mode_texts[] = {
     "This allows playing audio at lower or higher speed without " \
     "affecting the audio pitch" )
 
+#define AUDIO_MAX_RESAMPLING_TEXT N_( \
+    "Maximum drift correction by resampling" )
+#define AUDIO_MAX_RESAMPLING_LONGTEXT N_( \
+    "How much resampling may be used to correct drift between the stream and " \
+    "the audio device, in 1/1000 of the sample rate. Resampling shifts pitch " \
+    "as well as speed, so this bounds how far playback can be detuned while a " \
+    "drift is being corrected: 5 is about 8.6 cents. Lower it if you can hear " \
+    "the correction, at the cost of slower resynchronisation. Set it to 0 to " \
+    "never correct drift by resampling." )
+
 
 static const char *const ppsz_replay_gain_mode[] = {
     "none", "track", "album" };
@@ -1609,6 +1619,9 @@ vlc_module_begin ()
     add_bool( "volume-save", true, VOLUME_SAVE_TEXT, NULL )
     add_bool( "audio-time-stretch", true, AUDIO_TIME_STRETCH_TEXT,
                 AUDIO_TIME_STRETCH_LONGTEXT )
+    add_integer( "aout-max-resampling", AOUT_MAX_RESAMPLING_PERMILLE,
+                 AUDIO_MAX_RESAMPLING_TEXT, AUDIO_MAX_RESAMPLING_LONGTEXT )
+        change_integer_range( 0, 100 )
 #if defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32)
     add_bool( "spdif", false, SPDIF_TEXT, SPDIF_LONGTEXT )
 #else
