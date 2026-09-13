@@ -1949,7 +1949,7 @@ static int get_chunk_header(demux_t *p_demux)
     if (p_peek[3] & 0x80)
     {
         /* 16 bit rec cnt */
-        p_sys->i_num_recs = i_num_recs = (p_peek[1] << 8) + p_peek[0];
+        i_num_recs = (p_peek[1] << 8) + p_peek[0];
         p_sys->i_seq_rec = (p_peek[3] << 8) + p_peek[2];
         if (p_sys->i_seq_rec != 0xffff)
         {
@@ -1959,7 +1959,7 @@ static int get_chunk_header(demux_t *p_demux)
     else
     {
         /* 8 bit reclen - tivo 1.3 format */
-        p_sys->i_num_recs = i_num_recs = p_peek[0];
+        i_num_recs = p_peek[0];
         p_sys->i_seq_rec = p_peek[1];
     }
 
@@ -1973,6 +1973,10 @@ static int get_chunk_header(demux_t *p_demux)
 
     free(p_sys->rec_hdrs);
     p_sys->rec_hdrs = NULL;
+    /* Keep the count in step with the array. Every bail-out below leaves the
+     * array gone, and the seek helpers index it without checking whether this
+     * function succeeded. */
+    p_sys->i_num_recs = 0;
 
     /* skip past the 4 bytes we "peeked" earlier */
     if(vlc_stream_Read(p_demux->s, NULL, 4) != 4)
@@ -1995,6 +1999,8 @@ static int get_chunk_header(demux_t *p_demux)
         p_sys->i_num_recs = 0;
         return VLC_ENOMEM;
     }
+
+    p_sys->i_num_recs = i_num_recs;
 
     p_sys->i_stuff_cnt = CHUNK_SIZE - 4 -
         (p_sys->i_num_recs * REC_SIZE) - i_payload_size;
