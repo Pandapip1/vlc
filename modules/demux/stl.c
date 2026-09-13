@@ -130,6 +130,19 @@ static int Control(demux_t *demux, int query, va_list args)
                 return VLC_SUCCESS;
             }
         }
+        /* Nothing starts after t, so the target lies in or past the last
+         * entry. The loop cannot reach it because it stops one short, and
+         * with a single subtitle it does not run at all - which made such a
+         * file impossible to seek anywhere, including back to the start. */
+        if( sys->count > 0 &&
+            vlc_stream_Seek(demux->s,
+                            1024 + 128LL * sys->index[sys->count - 1].blocknumber) == VLC_SUCCESS )
+        {
+            sys->current = sys->count - 1;
+            sys->next_date = t;
+            sys->b_first_time = true;
+            return VLC_SUCCESS;
+        }
         break;
     }
     case DEMUX_SET_POSITION:
