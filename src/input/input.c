@@ -614,8 +614,20 @@ static int MainLoopTryRepeat( input_thread_t *p_input )
 {
     input_thread_private_t *priv = input_priv(p_input);
     int i_repeat = var_GetInteger( p_input, "input-repeat" );
-    if( i_repeat <= 0 )
+
+    if( i_repeat < 0 )
         return VLC_EGENERIC;
+
+    if( i_repeat == 0 )
+    {
+        /* The playlist would otherwise honour this by destroying the input
+         * and building a new one, which takes the demuxer, decoder and audio
+         * output down and back up at every loop. Only for inputs that can be
+         * rewound and belong to the playlist. */
+        if( !var_GetBool( p_input, "can-seek" )
+         || !var_InheritBool( p_input, "repeat" ) )
+            return VLC_EGENERIC;
+    }
 
     /* A repeat is a seek back to the start, and a seek that does not take
      * leaves the end of stream exactly as it was, so the next pass through the
