@@ -778,7 +778,31 @@ bool aout_FiltersAdjustResampling (aout_filters_t *filters, int adjust)
         return false;
 
     if (adjust)
-        filters->resampling += adjust;
+    {
+        /* Bound the accumulated correction.
+         *
+         * Without a bound, absorbing a large drift ramps this offset into the
+         * kHz range - several percent of the nominal rate - because the rate
+         * at which the drift is made up is itself proportional to the offset.
+         * Since the offset is applied to the resampler's input rate, that is
+         * heard as the stream playing badly out of tune for as long as the
+         * correction lasts. See AOUT_MAX_RESAMPLING_PERMILLE.
+         *
+         * The bound is forced even so that the accumulator can still reach
+         * exactly 0 in steps of `adjust` and stop the resampling. */
+        const unsigned nominal_rate =
+            filters->resampler.f->fmt_in.audio.i_rate;
+        const int max =
+            (int)((nominal_rate * AOUT_MAX_RESAMPLING_PERMILLE) / 1000) & ~1;
+        int resampling = filters->resampling + adjust;
+
+        if (resampling > max)
+            resampling = max;
+        else if (resampling < -max)
+            resampling = -max;
+
+        filters->resampling = resampling;
+    }
     else
         filters->resampling = 0;
     return filters->resampling != 0;
