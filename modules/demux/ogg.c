@@ -695,6 +695,22 @@ static logical_stream_t * Ogg_GetSelectedStream( demux_t *p_demux )
             break;
         }
     }
+
+    /* Once the end of the stream has been reached the logical streams are torn
+     * down, and for the single stream case the last one is parked in
+     * p_old_stream so that Ogg_BeginningOfStream() can reuse its ES. i_streams
+     * is zero by then, so the loop above finds nothing and every seek is
+     * refused -- including the seek back to the start that the input uses to
+     * repeat a file, which then retries forever against an error that cannot
+     * clear itself.
+     *
+     * The parked stream still carries everything the seek needs, and seeking
+     * is what makes the demuxer usable again: the next Demux() re-reads the
+     * headers from the new position. So use it. */
+    if( p_stream == NULL && p_sys->p_old_stream != NULL &&
+        p_sys->p_old_stream->p_es != NULL )
+        p_stream = p_sys->p_old_stream;
+
     return p_stream;
 }
 
