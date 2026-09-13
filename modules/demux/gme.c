@@ -213,8 +213,14 @@ static int Demux (demux_t *demux)
     if (gme_track_ended (sys->emu))
     {
         msg_Dbg (demux, "track %u ended", sys->track_id);
-        if (++sys->track_id >= (unsigned)gme_track_count (sys->emu))
+        /* Test before advancing: running the index past the last track
+         * leaves it out of range for good, and every control that indexes
+         * titlev[] bails on that, so seeking and the length are lost once
+         * playback has ended. */
+        if (sys->track_id + 1 >= (unsigned)gme_track_count (sys->emu))
             return 0;
+
+        sys->track_id++;
 
         demux->info.i_update |= INPUT_UPDATE_TITLE;
         demux->info.i_title = sys->track_id;
