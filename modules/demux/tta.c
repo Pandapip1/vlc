@@ -251,7 +251,10 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         case DEMUX_SET_POSITION:
             f = va_arg( args, double );
             i64 = (int64_t)(f * (stream_Size( p_demux->s ) - p_sys->i_start));
-            if( i64 > 0 )
+            /* Position 0 is a valid target and lands on the first frame; the
+             * loop below copes with it. Rejecting it made seeking back to the
+             * start - which is how a file is repeated - always fail. */
+            if( i64 >= 0 )
             {
                 int64_t tmp = 0;
                 uint32_t i;
