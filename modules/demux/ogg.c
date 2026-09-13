@@ -759,6 +759,13 @@ static logical_stream_t * Ogg_GetSelectedStream( demux_t *p_demux )
             break;
         }
     }
+
+    /* At end of stream the logical streams are torn down and the last one
+     * is parked in p_old_stream; it still has what the seek needs. */
+    if( p_stream == NULL && p_sys->p_old_stream != NULL &&
+        p_sys->p_old_stream->p_es != NULL )
+        p_stream = p_sys->p_old_stream;
+
     return p_stream;
 }
 

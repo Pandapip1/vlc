@@ -263,8 +263,9 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
      * This can happen due to insufficient caching, scheduling jitter
      * or bug in the decoder. Ideally, the output would seek backward. But that
      * is not portable, not supported by some hardware and often unsafe/buggy
-     * where supported. The other alternative is to flush the buffers
-     * completely. */
+     * where supported. Play out what is queued and drop as much from what
+     * follows instead: flushing would throw away a second or more of audio,
+     * heard as a hole. */
     if (drift > (owner->sync.discontinuity ? 0
                   : +3 * input_rate * AOUT_MAX_PTS_DELAY / INPUT_RATE_DEFAULT))
     {
