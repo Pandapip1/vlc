@@ -736,6 +736,16 @@ static inline int ps_psm_fill( ps_psm_t *p_psm, block_t *p_pkt,
         es_format_Clean( &tk[i].fmt );
 
         tk_tmp.b_configured = true;
+        /* Carry the rest of the track over. This is the same elementary
+         * stream, only its format has changed, and ps_track_fill() only
+         * fills in i_skip, i_id and fmt. Without this the assignment below
+         * copies indeterminate values into the live track, which
+         * DEMUX_GET_TIME and DEMUX_SET_TIME go on to read. es is the one
+         * exception, being replaced on the line after the copy. */
+        tk_tmp.b_seen = tk[i].b_seen;
+        tk_tmp.i_next_block_flags = tk[i].i_next_block_flags;
+        tk_tmp.i_first_pts = tk[i].i_first_pts;
+        tk_tmp.i_last_pts = tk[i].i_last_pts;
         tk[i] = tk_tmp;
         tk[i].es = es_out_Add( out, &tk[i].fmt );
     }
