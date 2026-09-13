@@ -86,11 +86,17 @@ static int Control( demux_t* p_demux, int i_query, va_list args )
         case DEMUX_SET_TIME:
             if( p_sys->times.i_count )
             {
-                tt_time_t t = tt_time_Create( va_arg( args, vlc_tick_t ) - VLC_TICK_0 );
+                vlc_tick_t i_seek = va_arg( args, vlc_tick_t ) - VLC_TICK_0;
+                tt_time_t t = tt_time_Create( i_seek );
                 size_t i_index = tt_timings_FindLowerIndex( p_sys->times.p_array,
                                                             p_sys->times.i_count, t, &b );
                 p_sys->times.i_current = i_index;
                 p_sys->b_first_time = true;
+                /* Demux() only emits cues up to this watermark and otherwise
+                 * only ever advances it, so leaving it behind after a seek
+                 * backwards makes the next pass flush every remaining cue at
+                 * once with timestamps already in the past. */
+                p_sys->i_next_demux_time = i_seek;
                 return VLC_SUCCESS;
             }
             break;
@@ -133,6 +139,11 @@ static int Control( demux_t* p_demux, int i_query, va_list args )
                                                             p_sys->times.i_count, t, &b );
                 p_sys->times.i_current = i_index;
                 p_sys->b_first_time = true;
+                /* Demux() only emits cues up to this watermark and otherwise
+                 * only ever advances it, so leaving it behind after a seek
+                 * backwards makes the next pass flush every remaining cue at
+                 * once with timestamps already in the past. */
+                p_sys->i_next_demux_time = i64;
                 return VLC_SUCCESS;
             }
             break;
