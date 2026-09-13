@@ -279,6 +279,8 @@ static void stream_ResetTimings(vlc_aout_stream *stream)
     stream->timing.played_samples = 0;
 }
 
+static void stream_StopResampling(vlc_aout_stream *stream);
+
 static void stream_Reset(vlc_aout_stream *stream)
 {
     aout_owner_t *owner = aout_stream_owner(stream);
@@ -288,7 +290,15 @@ static void stream_Reset(vlc_aout_stream *stream)
         vlc_audio_meter_Flush(&owner->meter);
 
         if (stream->filters)
+        {
             aout_FiltersFlush (stream->filters);
+
+            /* Drop any accumulated drift correction along with the data it was
+             * computed for. Keeping it would leave the stream resampled - and
+             * so detuned - after a flush, a seek or a pause, with the timing
+             * reference it was derived from already gone. */
+            stream_StopResampling(stream);
+        }
 
         vlc_clock_Lock(stream->sync.clock);
         vlc_clock_Reset(stream->sync.clock);
@@ -664,6 +674,10 @@ static void stream_HandleDrift(vlc_aout_stream *stream, vlc_tick_t drift,
                   drift);
         stream->sync.resamp_type = AOUT_RESAMPLING_UP;
         stream->sync.resamp_start_drift = +drift;
+        /* Discard a correction left over from the opposite direction: it
+         * pushes the wrong way until it has unwound, which makes the drift it
+         * is supposed to be correcting worse in the meantime. */
+        aout_FiltersAdjustResampling(stream->filters, 0);
     }
     if (drift < -AOUT_MAX_PTS_ADVANCE
      && stream->sync.resamp_type != AOUT_RESAMPLING_DOWN)
@@ -674,6 +688,8 @@ static void stream_HandleDrift(vlc_aout_stream *stream, vlc_tick_t drift,
                   drift);
         stream->sync.resamp_type = AOUT_RESAMPLING_DOWN;
         stream->sync.resamp_start_drift = -drift;
+        /* See above. */
+        aout_FiltersAdjustResampling(stream->filters, 0);
     }
 
     if (stream->sync.resamp_type == AOUT_RESAMPLING_NONE)
