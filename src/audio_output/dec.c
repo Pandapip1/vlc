@@ -482,6 +482,13 @@ void aout_DecFlush (audio_output_t *aout, bool wait)
          * derived from already gone. */
         aout_StopResampling (aout);
     }
+
+    /* Treat what follows as a discontinuity, so that aout_DecSynchronize()
+     * re-establishes its reference from the first block instead of trying to
+     * make up an offset that is only an artefact of the flush. Otherwise a
+     * seek or a pause leaves a 40-180 ms offset to be "caught up" by
+     * resampling, which is heard as the stream playing out of tune. */
+    owner->sync.discontinuity = true;
     aout_OutputUnlock (aout);
 }
 
