@@ -577,6 +577,9 @@ static void MainLoopDemux( input_thread_t *p_input, bool *pb_changed )
     if( i_ret == VLC_DEMUXER_SUCCESS )
         i_ret = demux_Demux( p_demux );
 
+    if( i_ret > 0 )
+        p_priv->b_repeat_pending = false;
+
     i_ret = i_ret > 0 ? VLC_DEMUXER_SUCCESS : ( i_ret < 0 ? VLC_DEMUXER_EGENERIC : VLC_DEMUXER_EOF);
 
     if( i_ret == VLC_DEMUXER_SUCCESS )
@@ -609,9 +612,23 @@ static void MainLoopDemux( input_thread_t *p_input, bool *pb_changed )
 
 static int MainLoopTryRepeat( input_thread_t *p_input )
 {
+    input_thread_private_t *priv = input_priv(p_input);
     int i_repeat = var_GetInteger( p_input, "input-repeat" );
     if( i_repeat <= 0 )
         return VLC_EGENERIC;
+
+    /* A repeat is a seek back to the start, and a seek that does not take
+     * leaves the end of stream exactly as it was, so the next pass through the
+     * main loop asks for the same repeat again. Nothing bounded that beyond
+     * the repeat count itself: with a large count it spins as fast as it can,
+     * writing an error line per attempt and getting nowhere. Require the
+     * previous repeat to have demuxed something before allowing another. */
+    if( priv->b_repeat_pending )
+    {
+        msg_Warn( p_input, "repeating the input did not get anywhere, "
+                  "giving up" );
+        return VLC_EGENERIC;
+    }
 
     vlc_value_t val;
 
@@ -621,6 +638,7 @@ static int MainLoopTryRepeat( input_thread_t *p_input )
         i_repeat--;
         var_SetInteger( p_input, "input-repeat", i_repeat );
     }
+    priv->b_repeat_pending = true;
 
     /* Seek to start title/seekpoint */
     val.i_int = input_priv(p_input)->master->i_title_start -
