@@ -523,11 +523,16 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             *pf = p_sys->i_time / (double)p_sys->i_length;
             return VLC_SUCCESS;
         }
+        /* p_fp is NULL once DemuxEnd() has run, which happens when a chained
+         * header fails to re-initialise. The default case below guards the
+         * same dereference; this one did not, and the input polls
+         * DEMUX_GET_POSITION every 250 ms. */
         return demux_vaControlHelper( p_demux->s,
                                        __MIN( INT64_MAX, p_sys->i_data_begin ),
                                        __MIN( INT64_MAX, p_sys->i_data_end ),
                                        __MIN( INT64_MAX, p_sys->i_bitrate ),
-                                       __MIN( INT16_MAX, p_sys->p_fp->i_min_data_packet_size ),
+                                       ( p_sys->p_fp ) ?
+                                       __MIN( INT16_MAX, p_sys->p_fp->i_min_data_packet_size ) : 1,
                                        i_query, args );
 
     case DEMUX_SET_POSITION:
