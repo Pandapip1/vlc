@@ -311,7 +311,10 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 
         case DEMUX_SET_POSITION:
             f = va_arg( args, double );
-            i64 = (vlc_tick_t) f * p_sys->i_length;
+            /* The cast binds to f, not to the product, so every position
+              * below 1.0 truncated to 0 and every seek landed on the first
+              * subtitle. */
+            i64 = (vlc_tick_t)( f * p_sys->i_length );
             return demux_Control(p_demux, DEMUX_SET_TIME, i64, false);
 
         case DEMUX_SET_NEXT_DEMUX_TIME:
