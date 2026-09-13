@@ -60,8 +60,8 @@
  * above which upsampling will be performed */
 #define AOUT_MAX_PTS_DELAY              VLC_TICK_FROM_MS(60)
 
-/* Maximum drift correction applied by the resampler, in 1/1000 of the nominal
- * sample rate.
+/* Default for "aout-max-resampling": the maximum drift correction applied by
+ * the resampler, in 1/1000 of the nominal sample rate.
  *
  * Resampling changes pitch as well as speed, so this bound is what keeps a
  * drift correction from being heard as the stream playing out of tune; 5/1000
@@ -69,7 +69,10 @@
  * source and the audio device, which is a few tens of ppm for real hardware.
  * Larger offsets - notably the 60-120 ms a high latency sink typically reports
  * at start-up - are latency rather than drift, and are absorbed by the silence
- * insertion and flush paths instead of by detuning the audio. */
+ * insertion and flush paths instead of by detuning the audio.
+ *
+ * Lowering this trades slower resynchronisation for less audible detuning;
+ * zero leaves drift correction by resampling disabled altogether. */
 #define AOUT_MAX_RESAMPLING_PERMILLE    5
 
 #define AOUT_FMTS_IDENTICAL( p_first, p_second ) (                          \
