@@ -313,7 +313,11 @@ static size_t getIndexByTime( demux_sys_t *p_sys, vlc_tick_t i_time )
         if( p_sys->index.p_array[i].time >= i_time )
             return i;
     }
-    return 0;
+    /* Nothing starts at or after the requested time, so it lies past the
+     * last entry; that is where the caller should land. Returning 0 was
+     * indistinguishable from a match on the first entry and rewound to the
+     * beginning instead. */
+    return ( p_sys->index.i_count > 0 ) ? p_sys->index.i_count - 1 : 0;
 }
 
 static void BuildIndex( demux_t *p_demux )
