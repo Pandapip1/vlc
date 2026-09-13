@@ -614,8 +614,31 @@ static int MainLoopTryRepeat( input_thread_t *p_input )
 {
     input_thread_private_t *priv = input_priv(p_input);
     int i_repeat = var_GetInteger( p_input, "input-repeat" );
-    if( i_repeat <= 0 )
+
+    if( i_repeat < 0 )
         return VLC_EGENERIC;
+
+    if( i_repeat == 0 )
+    {
+        /* Follow the playlist's own repeat setting, which it would otherwise
+         * honour by destroying this input and building a new one for the same
+         * item. That takes the demuxer, the decoder and the audio output down
+         * and back up on every pass, which on a sink with any real latency is
+         * an audible break at the loop point. Seeking back to the start does
+         * the same job and keeps all of it alive.
+         *
+         * Only for inputs that can actually be rewound and that belong to the
+         * playlist: the media library and the preparser run inputs of their
+         * own whose demuxers cannot seek, and they have no business following
+         * a playlist setting.
+         *
+         * Read here rather than latched when the input starts, so that
+         * toggling repeat during playback takes effect from the end of the
+         * current pass. */
+        if( !var_GetBool( p_input, "can-seek" )
+         || !var_InheritBool( p_input, "repeat" ) )
+            return VLC_EGENERIC;
+    }
 
     /* A repeat is a seek back to the start, and a seek that does not take
      * leaves the end of stream exactly as it was, so the next pass through the
