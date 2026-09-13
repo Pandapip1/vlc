@@ -243,6 +243,9 @@ static int Control( demux_t* p_demux, int i_query, va_list args )
                                                             p_sys->times.i_count, t, &b );
                 p_sys->times.i_current = i_index;
                 p_sys->b_first_time = true;
+                /* Demux() only ever advances this; leaving it behind would
+                 * flush every remaining cue at once. */
+                p_sys->i_next_demux_time = i64 - VLC_TICK_0;
                 return VLC_SUCCESS;
             }
             break;
@@ -287,6 +290,9 @@ static int Control( demux_t* p_demux, int i_query, va_list args )
                                                             p_sys->times.i_count, t, &b );
                 p_sys->times.i_current = i_index;
                 p_sys->b_first_time = true;
+                /* Demux() only ever advances this; leaving it behind would
+                 * flush every remaining cue at once. */
+                p_sys->i_next_demux_time = i64;
                 return VLC_SUCCESS;
             }
             break;
