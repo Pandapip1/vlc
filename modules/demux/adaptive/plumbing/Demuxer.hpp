@@ -55,6 +55,9 @@ namespace adaptive
             bool needsRestartOnEachSegment() const;
             void setBitstreamSwitchCompatible(bool);
             void setRestartsOnEachSegment(bool);
+            /* Forget having reached the end, for a demuxer that is being
+             * repositioned rather than rebuilt. */
+            virtual void resetEOF();
 
         protected:
             static Status returnCode(int);
@@ -73,6 +76,7 @@ namespace adaptive
             void drain() override;
             bool create() override;
             void destroy() override;
+            void resetEOF() override;
 
         protected:
             AbstractSourceStream *sourcestream;
