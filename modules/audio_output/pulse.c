@@ -35,6 +35,10 @@
 #include <pulse/pulseaudio.h>
 #include "audio_output/vlcpulse.h"
 
+/** How many write callbacks to keep padding silence while the sink has yet to
+ * report any timing information, before starting anyway. */
+#define PULSE_START_TRIES 5
+
 static int  Open        ( vlc_object_t * );
 static void Close       ( vlc_object_t * );
 
@@ -76,6 +80,7 @@ typedef struct
     pa_cvolume cvolume; /**< actual sink input volume */
 
     bool start_date_reached;
+    unsigned start_tries; /**< Write callbacks spent waiting for timing */
     vlc_tick_t start_date;
     size_t total_silence_bytes;
 
@@ -97,11 +102,20 @@ typedef struct
     vlc_tick_t timing_system_ts;
 } aout_sys_t;
 
+/**
+ * Interpolates the stream latency at a given date.
+ * @param known if non-NULL, set to whether the sink actually reported timing.
+ * A false value means the returned zero is "no idea", not "no latency".
+ */
 static vlc_tick_t stream_get_interpolated_latency(pa_stream *s,
                                                   audio_output_t *aout,
-                                                  vlc_tick_t system_date)
+                                                  vlc_tick_t system_date,
+                                                  bool *known)
 {
     aout_sys_t *sys = aout->sys;
+
+    if (known != NULL)
+        *known = false;
 
     if (unlikely(sys->timing_system_ts == VLC_TICK_INVALID))
         return 0;
@@ -109,6 +123,9 @@ static vlc_tick_t stream_get_interpolated_latency(pa_stream *s,
     vlc_tick_t latency = vlc_pa_get_latency(aout, sys->context, s);
     if (unlikely(latency == VLC_TICK_INVALID))
         return 0;
+
+    if (known != NULL)
+        *known = true;
 
     return latency + sys->timing_system_ts - system_date;
 }
@@ -391,7 +408,7 @@ static void stream_drain(pa_stream *s, audio_output_t *aout)
     /* XXX: Loosy drain emulation.
      * See #18141: drain callback is never received */
     vlc_tick_t delay =
-        stream_get_interpolated_latency(s, aout, vlc_tick_now());
+        stream_get_interpolated_latency(s, aout, vlc_tick_now(), NULL);
 
     delay += pa_rtclock_now();
     sys->drain_trigger = pa_context_rttime_new(sys->context, delay,
@@ -495,12 +512,28 @@ static void stream_write_cb(pa_stream *s, size_t nbytes, void *userdata)
         /* Write 0s until we reach the start_date */
         size_t silence_bytes;
 
-        if (likely(sys->start_date != VLC_TICK_INVALID))
+        bool latency_known;
+        vlc_tick_t now = vlc_tick_now();
+        vlc_tick_t latency =
+            stream_get_interpolated_latency(s, aout, now, &latency_known);
+
+        if (unlikely(!latency_known && sys->start_tries < PULSE_START_TRIES))
+        {
+            /* The latency is how much sooner than start_date the samples have
+             * to be written for them to come out at start_date. Taking an
+             * unknown latency for zero pads too much silence, so playback
+             * starts exactly one sink latency late - and the core reads that
+             * as drift and corrects it by resampling, which shifts pitch.
+             * Keep padding instead, as we already do when start_date itself is
+             * unknown, and decide once the sink reports timing. Nothing is
+             * lost by waiting: the samples stay queued in the fifo. */
+            sys->start_tries++;
+            silence_bytes = nbytes;
+        }
+        else if (likely(sys->start_date != VLC_TICK_INVALID))
         {
             const pa_sample_spec *ss = pa_stream_get_sample_spec(s);
 
-            vlc_tick_t now = vlc_tick_now();
-            vlc_tick_t latency = stream_get_interpolated_latency(s, aout, now);
             vlc_tick_t silence = sys->start_date - now - latency;
             if (silence <= 0)
                 silence_bytes = 0;
@@ -739,6 +772,7 @@ static void Flush(audio_output_t *aout)
     sys->fifo.last = &sys->fifo.first;
 
     sys->start_date_reached = false;
+    sys->start_tries = 0;
     sys->start_date = VLC_TICK_INVALID;
     sys->total_silence_bytes = 0;
     sys->timing_system_ts = VLC_TICK_INVALID;
@@ -995,6 +1029,7 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
     sys->first_pts = VLC_TICK_INVALID;
 
     sys->start_date_reached = false;
+    sys->start_tries = 0;
     sys->start_date = VLC_TICK_INVALID;
     sys->total_silence_bytes = 0;
     sys->timing_system_ts = VLC_TICK_INVALID;
