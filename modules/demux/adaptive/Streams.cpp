@@ -177,7 +177,16 @@ bool AbstractStream::resetForNewPosition(vlc_tick_t seekMediaTime)
             fakeEsOut()->commandsQueue()->setEOF(false);
         }
     }
-    else fakeEsOut()->commandsQueue()->Abort( true );
+    else
+    {
+        /* Not rebuilt, only repositioned: the demuxer's own end of file flag
+         * is otherwise cleared solely when one is created, and demux() answers
+         * Eof for good while it is set. The slave demuxers used for DASH
+         * subtitle tracks never restart on seek, so without this such a track
+         * stops for the rest of the session once it has run out once. */
+        demuxer->resetEOF();
+        fakeEsOut()->commandsQueue()->Abort( true );
+    }
     return true;
 }
 

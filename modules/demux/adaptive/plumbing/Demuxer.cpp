@@ -76,6 +76,10 @@ bool AbstractDemuxer::needsRestartOnSeek() const
     return b_reinitsonseek;
 }
 
+void AbstractDemuxer::resetEOF()
+{
+}
+
 AbstractDemuxer::Status AbstractDemuxer::returnCode(int i_ret)
 {
     switch(i_ret)
@@ -137,6 +141,11 @@ bool Demuxer::create()
     }
 
     return true;
+}
+
+void Demuxer::resetEOF()
+{
+    b_eof = false;
 }
 
 void Demuxer::destroy()
