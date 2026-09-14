@@ -163,7 +163,12 @@ int DASHManager::doControl(int i_query, va_list args)
 
             vlc_meta_Merge(p_meta, meta);
             vlc_meta_Delete(meta);
-            break;
+            /* The meta has been filled in, so report that rather than falling
+             * through: PlaylistManager::doControl() has no case for this query
+             * and answers VLC_EGENERIC, which told the caller nothing had been
+             * produced. It would also be handed an args that has already been
+             * walked. */
+            return VLC_SUCCESS;
         }
     }
     return PlaylistManager::doControl(i_query, args);
