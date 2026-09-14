@@ -578,7 +578,7 @@ static void MainLoopDemux( input_thread_t *p_input, bool *pb_changed )
         i_ret = demux_Demux( p_demux );
 
     if( i_ret > 0 )
-        p_priv->b_repeat_pending = false;
+        p_priv->i_repeat_pending = 0;
 
     i_ret = i_ret > 0 ? VLC_DEMUXER_SUCCESS : ( i_ret < 0 ? VLC_DEMUXER_EGENERIC : VLC_DEMUXER_EOF);
 
@@ -609,6 +609,11 @@ static void MainLoopDemux( input_thread_t *p_input, bool *pb_changed )
     else if( p_priv->i_slave > 0 )
         SlaveDemux( p_input );
 }
+/* How many queued repeats may go by without the demuxer producing anything
+ * before the repeat is treated as not taking. Covers the couple of passes of
+ * the main loop between queueing the seek and it being applied. */
+#define INPUT_REPEAT_MAX_PENDING 5
+
 
 static int MainLoopTryRepeat( input_thread_t *p_input )
 {
@@ -628,16 +633,15 @@ static int MainLoopTryRepeat( input_thread_t *p_input )
             return VLC_EGENERIC;
     }
 
-    /* A repeat is a seek back to the start, and a seek that does not take
-     * leaves the end of stream exactly as it was, so the next pass through the
-     * main loop asks for the same repeat again. Nothing bounded that beyond
-     * the repeat count itself: with a large count it spins as fast as it can,
-     * writing an error line per attempt and getting nowhere. Require the
-     * previous repeat to have demuxed something before allowing another. */
-    if( priv->b_repeat_pending )
+    /* A seek that does not take leaves the end of stream as it was, so the
+     * next pass asks for the same repeat again - with a large repeat count,
+     * spinning as fast as it can. The seek is only queued here, so hitting the
+     * end again before it is applied is an ordinary race rather than a
+     * failure; allow a few passes before giving up. */
+    if( priv->i_repeat_pending >= INPUT_REPEAT_MAX_PENDING )
     {
-        msg_Warn( p_input, "repeating the input did not get anywhere, "
-                  "giving up" );
+        msg_Warn( p_input, "repeating the input did not get anywhere after "
+                  "%u tries, giving up", priv->i_repeat_pending );
         return VLC_EGENERIC;
     }
 
@@ -649,7 +653,7 @@ static int MainLoopTryRepeat( input_thread_t *p_input )
         i_repeat--;
         var_SetInteger( p_input, "input-repeat", i_repeat );
     }
-    priv->b_repeat_pending = true;
+    priv->i_repeat_pending++;
 
     /* Seek to start title/seekpoint */
     val.i_int = input_priv(p_input)->master->i_title_start -
