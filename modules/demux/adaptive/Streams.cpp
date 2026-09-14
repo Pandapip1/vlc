@@ -149,6 +149,11 @@ bool AbstractStream::resetForNewPosition(vlc_tick_t seekMediaTime)
     inrestart = false;
     needrestart = false;
     discontinuity = false;
+    /* A seek is a fresh attempt. The flag is a guard against retrying a failed
+     * start on every buffering pass, not a permanent verdict on the stream, and
+     * the failure paths below and in doBufferize() raise it again immediately
+     * if starting still does not work. */
+    valid = true;
     if(!demuxer || demuxer->needsRestartOnSeek()) /* needs (re)start */
     {
         delete currentChunk;
