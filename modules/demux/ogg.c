@@ -2437,7 +2437,11 @@ static void Ogg_LogicalStreamDelete( demux_t *p_demux, logical_stream_t *p_strea
  * This function check if a we need to reset a decoder in case we are
  * reusing an old ES
  */
-static bool Ogg_IsVorbisFormatCompatible( const es_format_t *p_new, const es_format_t *p_old )
+/* Compares the xiph-packed headers of two formats, ignoring the comment
+ * header. Every codec whose headers are appended with xiph_AppendHeaders()
+ * can use this: identical headers mean an identical decoder configuration,
+ * and only the metadata differs. */
+static bool Ogg_IsXiphFormatCompatible( const es_format_t *p_new, const es_format_t *p_old )
 {
     size_t pi_new_size[XIPH_MAX_HEADER_COUNT];
     const void *pp_new_data[XIPH_MAX_HEADER_COUNT];
@@ -2456,7 +2460,7 @@ static bool Ogg_IsVorbisFormatCompatible( const es_format_t *p_new, const es_for
     bool b_match = i_new_count == i_old_count;
     for (size_t i = 0; i < i_new_count && b_match; i++)
     {
-        /* Ignore vorbis comment */
+        /* Ignore the comment header, which is metadata only */
         if( i == 1 )
             continue;
         if( pi_new_size[i] != pi_old_size[i] ||
@@ -2563,9 +2567,12 @@ static bool Ogg_LogicalStreamResetEsFormat( demux_t *p_demux, logical_stream_t *
     if( !p_stream->fmt_old.i_cat || !p_stream->fmt_old.i_codec )
         return true;
 
-    /* Only Vorbis and Opus are supported. */
-    if( p_stream->fmt.i_codec == VLC_CODEC_VORBIS )
-        b_compatible = Ogg_IsVorbisFormatCompatible( &p_stream->fmt, &p_stream->fmt_old );
+    /* Codecs whose headers are xiph-packed can be compared header by header;
+     * Opus needs its own comparison, and FLAC in Ogg is not xiph-packed. */
+    if( p_stream->fmt.i_codec == VLC_CODEC_VORBIS ||
+        p_stream->fmt.i_codec == VLC_CODEC_SPEEX ||
+        p_stream->fmt.i_codec == VLC_CODEC_THEORA )
+        b_compatible = Ogg_IsXiphFormatCompatible( &p_stream->fmt, &p_stream->fmt_old );
     else if( p_stream->fmt.i_codec == VLC_CODEC_OPUS )
         b_compatible = Ogg_IsOpusFormatCompatible( &p_stream->fmt, &p_stream->fmt_old );
     else if( p_stream->fmt.i_codec == VLC_CODEC_FLAC )
