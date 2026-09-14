@@ -411,8 +411,13 @@ virtual_chapter_c* virtual_edition_c::getChapterbyTimecode( vlc_tick_t time )
     {
         virtual_chapter_c* last_chapter = vchapters.back();
 
+        /* The virtual stop time of the last chapter is also the duration of
+         * the edition, and ContainsTimestamp() is half open, so a seek to the
+         * very end - a seek to 100%, for instance - matches no chapter at all.
+         * Clamp it to the last chapter instead of failing the seek. */
         if( last_chapter->i_mk_virtual_start_time <= time &&
-            last_chapter->i_mk_virtual_stop_time < 0 )
+            ( last_chapter->i_mk_virtual_stop_time < 0 ||
+              time <= last_chapter->i_mk_virtual_stop_time ) )
         {
             return last_chapter;
         }
