@@ -583,6 +583,15 @@ static struct vlc_pw_stream *vlc_pw_stream_create(audio_output_t *aout,
     if (unlikely(props == NULL))
         return NULL;
 
+    /* Ask the graph to run at the sample rate of the stream, so that the
+     * server does not need to resample. This is only a hint: the server keeps
+     * its current rate if it cannot switch (other streams running, rate not in
+     * the allowed list, forced rate...), and resamples as it did before. The
+     * PulseAudio protocol server sets the same property on behalf of its
+     * clients, so this also makes both back-ends behave alike. */
+    if (likely(fmt->i_rate != 0))
+        pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%u", fmt->i_rate);
+
     char *role = var_InheritString(aout, "role");
     if (role != NULL) { /* Capitalise the first character */
         pw_properties_setf(props, PW_KEY_MEDIA_ROLE, "%c%s",
