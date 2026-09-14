@@ -1610,6 +1610,11 @@ static int Seek( demux_t *p_demux, vlc_tick_t i_date, bool b_accurate )
     demux_sys_t *p_sys = p_demux->p_sys;
     unsigned int i_track;
 
+    /* A seek re-establishes where we are reading from, so whatever left the
+     * position unknown no longer holds. If this attempt fails and the restore
+     * below fails with it, the flag is raised again. */
+    p_sys->b_error = false;
+
     /* Now for each stream try to go to this time */
     vlc_tick_t i_start = i_date;
     for( i_track = 0; i_track < p_sys->i_tracks; i_track++ )
@@ -1801,6 +1806,9 @@ static void FragTrunSeekToTime( mp4_track_t *p_track, stime_t i_target_time )
 static int FragSeekToTime( demux_t *p_demux, vlc_tick_t i_nztime, bool b_accurate )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
+
+    /* As in Seek() above. */
+    p_sys->b_error = false;
     uint64_t i64 = UINT64_MAX;
     uint32_t i_segment_type = ATOM_moof;
     stime_t  i_segment_time = INT64_MAX;
