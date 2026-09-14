@@ -73,6 +73,7 @@ enum es_out_query_private_e
 
     /* Set a new time */
     ES_OUT_SET_TIME,                                /* arg1=vlc_tick_t          res=can fail */
+    ES_OUT_SET_TIME_REPEAT,                         /* no arg                   res=cannot fail */
 
     /* Set next frame */
     ES_OUT_SET_FRAME_NEXT,                          /*                          res=can fail */
@@ -135,6 +136,10 @@ static inline int es_out_SetPauseState( es_out_t *p_out, bool b_source_paused, b
 static inline int es_out_SetRate( es_out_t *p_out, int i_source_rate, int i_rate )
 {
     return es_out_Control( p_out, ES_OUT_SET_RATE, i_source_rate, i_rate );
+}
+static inline int es_out_SetTimeRepeat( es_out_t *p_out )
+{
+    return es_out_Control( p_out, ES_OUT_SET_TIME_REPEAT );
 }
 static inline int es_out_SetTime( es_out_t *p_out, vlc_tick_t i_date )
 {
