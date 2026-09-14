@@ -708,6 +708,16 @@ static int ControlLocked( es_out_t *p_out, int i_query, va_list args )
 
         return ControlLockedSetRate( p_out, i_src_rate, i_rate );
     }
+    case ES_OUT_SET_TIME_REPEAT:
+    {
+        es_out_sys_t *p_sys = p_out->p_sys;
+
+        if( !p_sys->b_delayed )
+            return es_out_SetTimeRepeat( p_sys->p_out );
+
+        msg_Err( p_sys->p_input, "EsOutTimeshift does not yet support repeat" );
+        return VLC_EGENERIC;
+    }
     case ES_OUT_SET_TIME:
     {
         const vlc_tick_t i_date = (vlc_tick_t)va_arg( args, vlc_tick_t );

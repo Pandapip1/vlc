@@ -199,7 +199,7 @@ static void EsDeleteInfo( es_out_t *, es_out_id_t *es );
 static void EsUnselect( es_out_t *out, es_out_id_t *es, bool b_update );
 static void EsOutDecoderChangeDelay( es_out_t *out, es_out_id_t *p_es );
 static void EsOutDecodersChangePause( es_out_t *out, bool b_paused, vlc_tick_t i_date );
-static void EsOutChangePosition( es_out_t *out );
+static void EsOutChangePosition( es_out_t *out, bool b_flush );
 static void EsOutProgramChangePause( es_out_t *out, bool b_paused, vlc_tick_t i_date );
 static void EsOutProgramsChangeRate( es_out_t *out );
 static void EsOutDecodersStopBuffering( es_out_t *out, bool b_forced );
@@ -562,7 +562,7 @@ static void EsOutStopNextFrame( es_out_t *out )
     es_out_sys_t *p_sys = out->p_sys;
     assert( p_sys->p_next_frame_es != NULL );
     /* Flush every ES except the video one */
-    EsOutChangePosition( out );
+    EsOutChangePosition( out, true );
     p_sys->p_next_frame_es = NULL;
 }
 
@@ -618,7 +618,7 @@ static void EsOutChangeRate( es_out_t *out, int i_rate )
     EsOutProgramsChangeRate( out );
 }
 
-static void EsOutChangePosition( es_out_t *out )
+static void EsOutChangePosition( es_out_t *out, bool b_flush )
 {
     es_out_sys_t      *p_sys = out->p_sys;
 
@@ -628,7 +628,14 @@ static void EsOutChangePosition( es_out_t *out )
     {
         es_out_id_t *p_es = p_sys->es[i];
 
-        if( p_es->p_dec != NULL )
+        /* A repeat of the same item is a seek back to the start, but unlike an
+         * ordinary seek there is nothing to discard: what is already decoded
+         * is still wanted, and it is exactly what covers the gap while the
+         * demuxer starts over. Flushing it here empties the audio output, the
+         * sink then runs dry, and on PipeWire a drained sink is parked and has
+         * to be resumed - which is audible. Keep the decoders running and let
+         * the queued data play out underneath the new pass. */
+        if( p_es->p_dec != NULL && b_flush )
         {
             input_DecoderFlush( p_es->p_dec );
             if( !p_sys->b_buffering )
@@ -638,7 +645,8 @@ static void EsOutChangePosition( es_out_t *out )
                     input_DecoderStartWait( p_es->p_dec_record );
             }
         }
-        p_es->i_pts_level = VLC_TICK_INVALID;
+        if( b_flush )
+            p_es->i_pts_level = VLC_TICK_INVALID;
     }
 
     for( int i = 0; i < p_sys->i_pgrm; i++ ) {
@@ -2573,7 +2581,7 @@ static int EsOutControlLocked( es_out_t *out, int i_query, va_list args )
 
     case ES_OUT_RESET_PCR:
         msg_Dbg( p_sys->p_input, "ES_OUT_RESET_PCR called" );
-        EsOutChangePosition( out );
+        EsOutChangePosition( out, true );
         return VLC_SUCCESS;
 
     case ES_OUT_SET_GROUP:
@@ -2813,10 +2821,18 @@ static int EsOutControlLocked( es_out_t *out, int i_query, va_list args )
         const vlc_tick_t i_date = va_arg( args, vlc_tick_t );
 
         assert( i_date == -1 );
-        EsOutChangePosition( out );
+        EsOutChangePosition( out, true );
 
         return VLC_SUCCESS;
     }
+
+    case ES_OUT_SET_TIME_REPEAT:
+        /* Same as ES_OUT_SET_TIME, but for a seek back to the start that
+         * repeats the item rather than moving elsewhere in it. Nothing already
+         * decoded needs discarding, and keeping it is what makes the loop
+         * inaudible. */
+        EsOutChangePosition( out, false );
+        return VLC_SUCCESS;
 
     case ES_OUT_SET_FRAME_NEXT:
         EsOutFrameNext( out );

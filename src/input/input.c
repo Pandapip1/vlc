@@ -662,6 +662,7 @@ static int MainLoopTryRepeat( input_thread_t *p_input )
         var_SetInteger( p_input, "input-repeat", i_repeat );
     }
     priv->i_repeat_pending++;
+    priv->b_repeat_seek = true;
 
     /* Seek to start title/seekpoint */
     val.i_int = input_priv(p_input)->master->i_title_start -
@@ -2070,7 +2071,11 @@ static bool Control( input_thread_t *p_input,
             else if( f_pos > 1.f )
                 f_pos = 1.f;
             /* Reset the decoders states and clock sync (before calling the demuxer */
-            es_out_SetTime( input_priv(p_input)->p_es_out, -1 );
+            if( input_priv(p_input)->b_repeat_seek )
+                es_out_SetTimeRepeat( input_priv(p_input)->p_es_out );
+            else
+                es_out_SetTime( input_priv(p_input)->p_es_out, -1 );
+            input_priv(p_input)->b_repeat_seek = false;
             if( demux_Control( input_priv(p_input)->master->p_demux, DEMUX_SET_POSITION,
                                (double) f_pos, !input_priv(p_input)->b_fast_seek ) )
             {
@@ -2104,7 +2109,11 @@ static bool Control( input_thread_t *p_input,
                 i_time = 0;
 
             /* Reset the decoders states and clock sync (before calling the demuxer */
-            es_out_SetTime( input_priv(p_input)->p_es_out, -1 );
+            if( input_priv(p_input)->b_repeat_seek )
+                es_out_SetTimeRepeat( input_priv(p_input)->p_es_out );
+            else
+                es_out_SetTime( input_priv(p_input)->p_es_out, -1 );
+            input_priv(p_input)->b_repeat_seek = false;
 
             i_ret = demux_Control( input_priv(p_input)->master->p_demux,
                                    DEMUX_SET_TIME, i_time,

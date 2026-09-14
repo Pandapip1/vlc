@@ -105,6 +105,8 @@ typedef struct input_thread_private_t
     int64_t     i_stop;     /* :stop-time, 0 if none */
     int64_t     i_time;     /* Current time */
     bool        b_fast_seek;/* :input-fast-seek */
+    bool        b_repeat_seek; /* the queued seek is a repeat of the item,
+                                  not a move elsewhere in it */
     unsigned    i_repeat_pending; /* repeats asked for that have not demuxed
                                      anything yet */
 
