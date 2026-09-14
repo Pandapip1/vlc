@@ -152,6 +152,8 @@ bool AbstractStream::resetForNewPosition(vlc_tick_t seekMediaTime)
     inrestart = false;
     needrestart = false;
     discontinuity = false;
+    /* A seek is a fresh attempt; the failure paths raise this again. */
+    valid = true;
     if(!demuxer || demuxer->needsRestartOnSeek()) /* needs (re)start */
     {
         delete currentChunk;
