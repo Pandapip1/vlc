@@ -69,6 +69,18 @@ vlc_module_begin ()
     set_callback (OpenResampler)
 vlc_module_end ()
 
+typedef struct
+{
+    SRC_STATE *state;
+    bool dirty; /**< Whether the resampler holds buffered input frames */
+} filter_sys_t;
+
+/* Upper bound, in frames, on the amount of input that libsamplerate keeps in
+ * hand while resampling, i.e. half the length of its interpolation filter:
+ * 20, 47 and 144 frames for the fast, medium and best sinc converters
+ * respectively, and none for the linear and zero order hold ones. */
+#define SRC_LOOKAHEAD 256
+
 static block_t *Resample (filter_t *, block_t *);
 
 static int Open (vlc_object_t *obj)
@@ -92,6 +104,10 @@ static int OpenResampler (vlc_object_t *obj)
      || filter->fmt_in.audio.i_channels != filter->fmt_out.audio.i_channels )
         return VLC_EGENERIC;
 
+    filter_sys_t *sys = malloc (sizeof (*sys));
+    if (unlikely(sys == NULL))
+        return VLC_ENOMEM;
+
     int type = var_InheritInteger (obj, "src-converter-type");
     int err;
 
@@ -99,36 +115,58 @@ static int OpenResampler (vlc_object_t *obj)
     if (s == NULL)
     {
         msg_Err (obj, "cannot initialize resampler: %s", src_strerror (err));
+        free (sys);
         return VLC_EGENERIC;
     }
+
+    sys->state = s;
+    sys->dirty = false; /* a fresh state holds nothing */
 
     static const struct vlc_filter_operations filter_ops =
     {
         .filter_audio = Resample, .close = Close,
     };
     filter->ops = &filter_ops;
-    filter->p_sys = s;
+    filter->p_sys = sys;
 
     return VLC_SUCCESS;
 }
 
 static void Close (filter_t *filter)
 {
-    SRC_STATE *s = filter->p_sys;
+    filter_sys_t *sys = filter->p_sys;
 
-    src_delete (s);
+    src_delete (sys->state);
+    free (sys);
 }
 
 static block_t *Resample (filter_t *filter, block_t *in)
 {
     block_t *out = NULL;
     const size_t framesize = filter->fmt_out.audio.i_bytes_per_frame;
+    const unsigned irate = filter->fmt_in.audio.i_rate;
+    const unsigned orate = filter->fmt_out.audio.i_rate;
 
-    SRC_STATE *s = filter->p_sys;
+    filter_sys_t *sys = filter->p_sys;
+    SRC_STATE *s = sys->state;
     SRC_DATA src;
 
-    src.src_ratio = (double)filter->fmt_out.audio.i_rate
-                  / (double)filter->fmt_in.audio.i_rate;
+    if (irate == orate && !sys->dirty)
+    {   /* Nothing to do: the ratio is exactly one and the resampler holds no
+         * buffered frames. The audio output instantiates this filter for
+         * drift correction alone, with equal rates, and only offsets the
+         * input rate while it is actually correcting a drift. Running the
+         * interpolation filter in the meantime would burn CPU and lowpass
+         * the samples for nothing. */
+        in->i_length = vlc_tick_from_samples(in->i_nb_samples, orate);
+        return in;
+    }
+
+    src.src_ratio = (double)orate / (double)irate;
+    /* If the ratio is back to one, this is the last pass: flush the frames
+     * that the resampler still holds, rather than dropping them when the fast
+     * path above takes over. */
+    src.end_of_input = (irate == orate);
 
     int err = src_set_ratio (s, src.src_ratio);
     if (err != 0)
@@ -140,7 +178,8 @@ static block_t *Resample (filter_t *filter, block_t *in)
 
     src.input_frames = in->i_nb_samples;
     src.output_frames = ceil (src.src_ratio * src.input_frames);
-    src.end_of_input = 0;
+    if (src.end_of_input)
+        src.output_frames += SRC_LOOKAHEAD; /* room for the flushed frames */
 
     out = block_Alloc (src.output_frames * framesize);
     if (unlikely(out == NULL))
@@ -150,6 +189,18 @@ static block_t *Resample (filter_t *filter, block_t *in)
     src.data_out = (float *)out->p_buffer;
 
     err = src_process (s, &src);
+
+    if (src.end_of_input)
+    {   /* A terminated state cannot be fed again as is. Resetting it also
+         * keeps the invariant that the resampler holds nothing at all while
+         * the fast path bypasses it, so that re-engaging it later cannot
+         * replay frames buffered an arbitrarily long time ago. */
+        src_reset (s);
+        sys->dirty = false;
+    }
+    else
+        sys->dirty = true;
+
     if (err != 0)
     {
         msg_Err (filter, "cannot resample: %s", src_strerror (err));
@@ -165,7 +216,7 @@ static block_t *Resample (filter_t *filter, block_t *in)
     out->i_buffer = src.output_frames_gen * framesize;
     out->i_nb_samples = src.output_frames_gen;
     out->i_pts = in->i_pts;
-    out->i_length = vlc_tick_from_samples(src.output_frames_gen, filter->fmt_out.audio.i_rate);
+    out->i_length = vlc_tick_from_samples(src.output_frames_gen, orate);
 error:
     block_Release (in);
     return out;
