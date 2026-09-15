@@ -774,8 +774,12 @@ static void MainLoop( input_thread_t *p_input, bool b_interactive )
             }
             else if( !es_out_GetEmpty( input_priv(p_input)->p_es_out ) )
             {
+                /* Poll for the tail to finish, but not at the idle rate: what
+                 * follows a repeat cannot be asked for until this reports
+                 * empty, so a tenth of a second of slack here is a tenth of a
+                 * second of silence at every loop. */
                 msg_Dbg( p_input, "waiting decoder fifos to empty" );
-                i_wakeup = mdate() + INPUT_IDLE_SLEEP;
+                i_wakeup = mdate() + INPUT_IDLE_SLEEP / 20;
             }
             /* Pause after eof only if the input is pausable.
              * This way we won't trigger timeshifting for nothing */
