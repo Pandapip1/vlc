@@ -403,8 +403,21 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
     if (bound != owner->sync.drift_bound)
     {
         owner->sync.drift_bound = bound;
-        msg_Dbg (aout, "drift correction %s the bound (drift: %"PRId64" us)",
-                 bound ? "reached" : "left", drift);
+
+        /* At the bound the correction is no longer answering the drift: it is
+         * giving all it is allowed to and the drift is still going the wrong
+         * way. Whatever is left accumulates until it is large enough to be
+         * jumped over, which is heard. Worth saying so - either the device is
+         * further off nominal than the bound allows for, or what is being
+         * corrected is not drift at all. */
+        if (bound)
+            msg_Warn (aout, "drift correction at its limit of %.0f cents "
+                      "(drift: %"PRId64" us): raise aout-max-resampling to "
+                      "correct it, at the cost of audible detuning", max,
+                      drift);
+        else
+            msg_Dbg (aout, "drift correction back within its limit "
+                     "(drift: %"PRId64" us)", drift);
     }
 
 }
