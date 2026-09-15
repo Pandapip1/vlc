@@ -635,10 +635,12 @@ static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
     int ret = -1;
 
     pa_threaded_mainloop_lock(sys->mainloop);
-    /* While the stream is running on silence to measure the device latency,
-     * what it reports describes the silence, not the audio. Reporting it
-     * would have the core treat the padding as lateness and flush. */
-    if (stream_clock_is_synced(s))
+    /* Anything held back is not queued yet, so the stream does not account
+     * for it. Answering with the silence it is running on instead describes
+     * neither: the core reads audio that is about to be let go all at once as
+     * a second of earliness, pads a second of silence to meet it, then finds
+     * that same second late and jumps over it. Say nothing until it is in. */
+    if (sys->fifo.first == NULL && stream_clock_is_synced(s))
     {
         vlc_tick_t delta = vlc_pa_get_latency(aout, sys->context, s);
         if (delta != VLC_TICK_INVALID)
