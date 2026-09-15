@@ -347,8 +347,9 @@ struct aout_filters
     filter_t *rate_filter; /**< The filter adjusting samples count
         (either the scaletempo filter or a resampler) */
     filter_t *resampler; /**< The resampler */
-    int resampling; /**< Current resampling (Hz) */
-    int max_cents; /**< Bound on the detune (cents); 0 disables it */
+    int timescaling; /**< Offset on the rate filter input rate (Hz) */
+    float scale_min; /**< Slowest the correction may play (percent) */
+    float scale_max; /**< Fastest the correction may play (percent) */
 
     unsigned count; /**< Number of filters */
     filter_t *tab[AOUT_MAX_FILTERS]; /**< Configured user filters
@@ -510,9 +511,10 @@ aout_filters_t *aout_FiltersNew (vlc_object_t *obj,
         return NULL;
 
     filters->rate_filter = NULL;
-    filters->max_cents = 0;
+    filters->scale_min = 100.f;
+    filters->scale_max = 100.f;
     filters->resampler = NULL;
-    filters->resampling = 0;
+    filters->timescaling = 0;
     filters->count = 0;
 
     /* Prepare format structure */
@@ -650,24 +652,32 @@ aout_filters_t *aout_FiltersNew (vlc_object_t *obj,
         msg_Err (obj, "cannot setup a resampler");
         goto error;
     }
-    if (filters->resampler != NULL)
-    {
-        /* Bound the drift correction the caller may ask for. It is kept as the
-         * interval it is given in rather than turned into a rate offset here:
-         * cents are logarithmic, so a bound applied to the offset would not be
-         * symmetric in the unit the bound is stated in, and the controller
-         * clamps its own integral against this same figure. */
-        int64_t cents = var_InheritInteger (obj, "aout-max-resampling");
-
-        if (cents < 0)
-            cents = 0;
-        else if (cents > AOUT_MAX_RESAMPLING_CENTS_MAX)
-            cents = AOUT_MAX_RESAMPLING_CENTS_MAX;
-
-        filters->max_cents = cents;
-    }
     if (filters->rate_filter == NULL)
         filters->rate_filter = filters->resampler;
+
+    /* Bound the drift correction the caller may ask for. Correcting by time
+     * scaling needs a filter that varies speed without varying pitch; without
+     * one the drift goes uncorrected rather than being detuned away. */
+    if (filters->rate_filter != NULL
+     && filters->rate_filter != filters->resampler)
+    {
+        float min = var_InheritFloat (obj, "aout-timescale-min");
+        float max = var_InheritFloat (obj, "aout-timescale-max");
+
+        if (min < AOUT_TIMESCALE_FLOOR)
+            min = AOUT_TIMESCALE_FLOOR;
+        if (min > 100.f)
+            min = 100.f;
+        if (max > AOUT_TIMESCALE_CEILING)
+            max = AOUT_TIMESCALE_CEILING;
+        if (max < 100.f)
+            max = 100.f;
+
+        filters->scale_min = min;
+        filters->scale_max = max;
+    }
+    else
+        msg_Dbg (obj, "no time stretcher: drift will not be corrected");
 
     return filters;
 
@@ -699,55 +709,48 @@ void aout_FiltersDelete (vlc_object_t *obj, aout_filters_t *filters)
 }
 
 /**
- * Returns the largest drift correction the resampler will apply, as a fraction
- * of the nominal sample rate. A zeroed bound disables drift correction by
- * resampling entirely; the resampler itself may still be needed for plain rate
- * conversion.
+ * Reports the range of playback speeds the drift correction may use, as a
+ * percentage of nominal. An empty range means it is disabled.
  */
-float aout_FiltersGetMaxDetune (aout_filters_t *filters)
+void aout_FiltersGetTimeScaleRange (aout_filters_t *filters,
+                                    float *restrict min, float *restrict max)
 {
-    if (filters->resampler == NULL)
-        return 0.f;
-
-    return filters->max_cents;
+    *min = filters->scale_min;
+    *max = filters->scale_max;
 }
 
 /**
- * Sets the drift correction applied by the resampler, as a fraction of the
- * nominal sample rate. Out of bound values are clamped: without that this
- * ramps into the kHz range, as the rate at which the drift is made up is
- * proportional to the offset, and the offset is applied to the resampler
- * input rate.
+ * Sets the playback speed the drift correction asks for, as a percentage of
+ * nominal, and returns what was actually applied. Out of range values are
+ * clamped, and the rate filter is driven in whole Hz, so the two rarely agree
+ * exactly; the caller needs the difference to answer for it.
  */
-float aout_FiltersSetDetune (aout_filters_t *filters, float cents)
+float aout_FiltersSetTimeScale (aout_filters_t *filters, float percent)
 {
-    if (filters->resampler == NULL)
-        return 0.f;
+    filter_t *rate_filter = filters->rate_filter;
 
-    const unsigned rate = filters->resampler->fmt_in.audio.i_rate;
-    const float max = filters->max_cents;
+    if (rate_filter == NULL || rate_filter == filters->resampler)
+        return 100.f;
 
-    /* Clamped as an interval, so that as much detuning is allowed downwards as
-     * upwards. Clamping the rate offset instead would not: a ratio of 1 + x is
-     * a smaller interval than 1 - x is. */
-    if (cents > +max)
-        cents = +max;
-    else if (cents < -max)
-        cents = -max;
+    if (percent < filters->scale_min)
+        percent = filters->scale_min;
+    else if (percent > filters->scale_max)
+        percent = filters->scale_max;
 
-    filters->resampling = lroundf (rate * (exp2f (cents / 1200.f) - 1.f));
+    /* Consuming the input faster than it is written out plays it faster, so
+     * the offset carries the same sign as the change of speed. */
+    const unsigned rate = rate_filter->fmt_in.audio.i_rate;
 
-    /* What the rate offset amounts to, which is not quite what was asked for:
-     * it is a whole number of Hz, and it was clamped. The caller needs to know
-     * so that it can answer for the difference. */
-    return 1200.f * log2f (1.f + filters->resampling / (float)rate);
+    filters->timescaling = lroundf (rate * (percent - 100.f) / 100.f);
+
+    return 100.f + filters->timescaling * 100.f / (float)rate;
 }
 
 block_t *aout_FiltersPlay (aout_filters_t *filters, block_t *block, int rate)
 {
     int nominal_rate = 0;
 
-    if (rate != INPUT_RATE_DEFAULT)
+    if (rate != INPUT_RATE_DEFAULT || filters->timescaling != 0)
     {
         filter_t *rate_filter = filters->rate_filter;
 
@@ -757,16 +760,14 @@ block_t *aout_FiltersPlay (aout_filters_t *filters, block_t *block, int rate)
         /* Override input rate */
         nominal_rate = rate_filter->fmt_in.audio.i_rate;
         rate_filter->fmt_in.audio.i_rate =
-            (nominal_rate * INPUT_RATE_DEFAULT) / rate;
+            (nominal_rate * INPUT_RATE_DEFAULT) / rate + filters->timescaling;
     }
 
     block = aout_FiltersPipelinePlay (filters->tab, filters->count, block);
     if (filters->resampler != NULL)
-    {   /* NOTE: the resampler needs to run even if resampling is 0.
-         * The decoder and output rates can still be different. */
-        filters->resampler->fmt_in.audio.i_rate += filters->resampling;
+    {   /* NOTE: the resampler needs to run even when no rate conversion is
+         * wanted. The decoder and output rates can still be different. */
         block = aout_FiltersPipelinePlay (&filters->resampler, 1, block);
-        filters->resampler->fmt_in.audio.i_rate -= filters->resampling;
     }
 
     if (nominal_rate != 0)
@@ -790,8 +791,6 @@ block_t *aout_FiltersDrain (aout_filters_t *filters)
     {
         block_t *chain = NULL;
 
-        filters->resampler->fmt_in.audio.i_rate += filters->resampling;
-
         if (block)
         {
             /* Resample the drained block from the filters pipeline */
@@ -804,8 +803,6 @@ block_t *aout_FiltersDrain (aout_filters_t *filters)
         block = aout_FiltersPipelineDrain (&filters->resampler, 1);
         if (block)
             block_ChainAppend (&chain, block);
-
-        filters->resampler->fmt_in.audio.i_rate -= filters->resampling;
 
         return chain ? block_ChainGather (chain) : NULL;
     }

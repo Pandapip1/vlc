@@ -180,8 +180,9 @@ static inline void aout_SetWavePhysicalChannels(audio_sample_format_t *fmt)
 }
 
 /* From filters.c */
-float aout_FiltersGetMaxDetune (aout_filters_t *filters);
-float aout_FiltersSetDetune (aout_filters_t *filters, float cents);
+void aout_FiltersGetTimeScaleRange (aout_filters_t *filters,
+                                    float *restrict min, float *restrict max);
+float aout_FiltersSetTimeScale (aout_filters_t *filters, float percent);
 
 void aout_ChangeViewpoint(audio_output_t *aout,
                           const vlc_viewpoint_t *p_viewpoint);

@@ -54,32 +54,36 @@
  * above which upsampling will be performed */
 #define AOUT_MAX_PTS_DELAY              (3 * CLOCK_FREQ / 50)
 
-/* Default for "aout-max-resampling": how far the drift correction may detune
- * the stream, in cents (hundredths of a semitone).
+/* Defaults for "aout-timescale-min" and "aout-timescale-max": how far the
+ * drift correction may vary playback speed, as a percentage of nominal.
  *
- * Resampling changes pitch as well as speed, so the bound is an interval
- * rather than a fraction of the sample rate. It only has to cover genuine
- * clock drift between the source and the device, a few tens of ppm on real
- * hardware; a larger offset is latency rather than drift, and is jumped over
- * instead of detuned away. Zero disables correction by resampling. */
-#define AOUT_MAX_RESAMPLING_CENTS       9
+ * Time scaling changes speed without touching pitch, and a change of speed is
+ * far less noticeable than the detuning it replaces - five percent here is a
+ * whole tone if it were applied to the pitch instead. So the bound can be
+ * generous: it is there to stop a runaway, not to keep the correction quiet.
+ * An empty range disables the correction. */
+#define AOUT_TIMESCALE_MIN              95.f
+#define AOUT_TIMESCALE_MAX              105.f
 
-/** Highest value accepted for "aout-max-resampling" (a whole tone) */
-#define AOUT_MAX_RESAMPLING_CENTS_MAX   200
+/** Range accepted for "aout-timescale-min" and "aout-timescale-max" */
+#define AOUT_TIMESCALE_FLOOR            50.f
+#define AOUT_TIMESCALE_CEILING          200.f
 
 /* Defaults for "aout-drift-gain" and "aout-drift-integral-gain", the gains of
- * the controller that turns the measured drift into a detune. Its input is a
- * drift in seconds and its output an interval in cents, so the proportional
- * gain is in cents/s and the integral one in cents/s^2.
+ * the controller that turns the measured drift into a change of speed. Its
+ * input is a drift in seconds and its output a percentage of nominal speed, so
+ * the proportional gain is in %/s and the integral one in %/s^2.
  *
- * A detune of u closes the drift at a rate proportional to u, so the loop is a
- * plain integrator and the PI controller makes it second order. These keep the
- * ratio between the two terms that gives a damping ratio of 0.89, and let the
- * proportional term alone ask for the whole of the default bound at one
- * AOUT_MAX_PTS_DELAY of drift:
- * AOUT_MAX_RESAMPLING_CENTS / (AOUT_MAX_PTS_DELAY / CLOCK_FREQ). */
-#define AOUT_DRIFT_GAIN                 150.f
-#define AOUT_DRIFT_INTEGRAL_GAIN        3.75f
+ * A change of speed of u closes the drift at a rate proportional to u, so the
+ * loop is a plain integrator and the PI controller makes it second order.
+ * These keep the ratio between the two terms that gives a damping ratio of
+ * 0.89, and set how hard the loop pulls rather than how far it may go: the
+ * proportional term alone asks for half a percent at one AOUT_MAX_PTS_DELAY
+ * of drift, well inside the bound above. */
+#define AOUT_DRIFT_GAIN                 8.33f
+#define AOUT_DRIFT_INTEGRAL_GAIN        0.208f
+
+
 
 #include "vlc_es.h"
 

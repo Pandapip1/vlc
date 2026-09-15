@@ -343,15 +343,21 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
         drift = 0;
     }
 
-    /* The detune is the output of a PI controller fed with the drift: the
+    /* The speed is the output of a PI controller fed with the drift: the
      * proportional term asks for the whole bound at about one
      * AOUT_MAX_PTS_DELAY, and the integral settles on the standing offset a
      * device off nominal rate needs. No derivative term - the drift is
      * quantised by however the output reports its delay. */
-    const float max = aout_FiltersGetMaxDetune (owner->filters);
+    float min, max;
 
-    if (max <= 0.f)
-        return; /* correction by resampling is disabled */
+    aout_FiltersGetTimeScaleRange (owner->filters, &min, &max);
+
+    if (min >= max)
+        return; /* drift correction is disabled */
+
+    /* The controller works in the deviation from nominal, not the speed. */
+    min -= 100.f;
+    max -= 100.f;
 
     if (owner->sync.discontinuity || owner->sync.skip > 0
      || now < owner->sync.skip_settles)
@@ -365,8 +371,9 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
 
     const float commanded = owner->sync.drift_kp * (drift / (float)CLOCK_FREQ)
                             + owner->sync.drift_integral;
-    const float applied = aout_FiltersSetDetune (owner->filters, commanded);
-    const bool bound = fabsf (applied) >= max;
+    const float applied = aout_FiltersSetTimeScale (owner->filters,
+                                                    100.f + commanded) - 100.f;
+    const bool bound = commanded < min || commanded > max;
 
     if (owner->sync.update != VLC_TICK_INVALID)
     {
@@ -384,18 +391,19 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
                       + owner->sync.drift_ki * (drift / (float)CLOCK_FREQ)
                         * seconds;
 
-            /* What reached the resampler is a whole number of Hz and may have
-             * been clamped. Integrating against what was asked would have the
-             * integral answer for a correction never made - winding up at the
-             * bound, and accumulating the rounding away from it - so feed the
-             * difference back over the time constant the gains imply. */
+            /* What reached the rate filter is a whole number of Hz and may
+             * have been clamped. Integrating against what was asked would
+             * have the integral answer for a correction never made - winding up
+             * at the bound, and accumulating the rounding away from it - so
+             * feed the difference back over the time constant the gains
+             * imply. */
             if (owner->sync.drift_kp > 0.f)
                 i += (applied - commanded)
                      * (owner->sync.drift_ki / owner->sync.drift_kp) * seconds;
 
             /* The integral on its own may not ask for more than the bound. */
-            owner->sync.drift_integral = (i > +max) ? +max
-                                       : (i < -max) ? -max : i;
+            owner->sync.drift_integral = (i > max) ? max
+                                       : (i < min) ? min : i;
         }
     }
     owner->sync.update = now;
@@ -411,15 +419,15 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
          * further off nominal than the bound allows for, or what is being
          * corrected is not drift at all. */
         if (bound)
-            msg_Warn (aout, "drift correction at its limit of %.0f cents "
-                      "(drift: %"PRId64" us): raise aout-max-resampling to "
-                      "correct it, at the cost of audible detuning", max,
-                      drift);
+            msg_Warn (aout, "drift correction at its limit of %+.2f%% "
+                      "(drift: %"PRId64" us): widen aout-timescale-min and "
+                      "aout-timescale-max to correct it, at the cost of "
+                      "audible speed changes",
+                      (commanded < min) ? min : max, drift);
         else
             msg_Dbg (aout, "drift correction back within its limit "
                      "(drift: %"PRId64" us)", drift);
     }
-
 }
 
 /*****************************************************************************

@@ -232,32 +232,36 @@ static const char *const ppsz_stereo_mode_texts[] = { N_("Unset"),
     "This allows playing audio at lower or higher speed without " \
     "affecting the audio pitch" )
 
-#define AUDIO_MAX_RESAMPLING_TEXT N_( \
-    "Maximum drift correction by resampling (cents)" )
-#define AUDIO_MAX_RESAMPLING_LONGTEXT N_( \
-    "How much resampling may be used to correct drift between the stream and " \
-    "the audio device, in cents of detune (100 cents is one semitone). " \
-    "Resampling shifts pitch as well as speed, so this bounds how far " \
-    "playback can be detuned while a drift is being corrected. Lower it if " \
-    "you can hear the correction, at the cost of slower resynchronisation. " \
-    "Set it to 0 to never correct drift by resampling." )
+#define AUDIO_TIMESCALE_MIN_TEXT N_( \
+    "Slowest drift correction (% of normal speed)" )
+#define AUDIO_TIMESCALE_MIN_LONGTEXT N_( \
+    "How far playback may be slowed down to correct drift between the stream " \
+    "and the audio device. Speed is varied without affecting pitch. Raise it " \
+    "towards 100 if you can hear the correction, at the cost of slower " \
+    "resynchronisation." )
+
+#define AUDIO_TIMESCALE_MAX_TEXT N_( \
+    "Fastest drift correction (% of normal speed)" )
+#define AUDIO_TIMESCALE_MAX_LONGTEXT N_( \
+    "How far playback may be sped up to correct drift between the stream and " \
+    "the audio device. Setting this to 100 along with the slowest speed " \
+    "disables drift correction entirely." )
 
 #define AUDIO_DRIFT_GAIN_TEXT N_( \
     "Drift correction gain" )
 #define AUDIO_DRIFT_GAIN_LONGTEXT N_( \
-    "Proportional gain of the drift correction: how much resampling is asked " \
-    "for per second of measured drift, as a fraction of the sample rate. The " \
-    "default asks for the whole of the \"aout-max-resampling\" bound at 60 ms " \
-    "of drift. Raising it corrects faster but tracks the noise of the delay " \
-    "reported by the audio device." )
+    "Proportional gain of the drift correction: how much speed is asked for " \
+    "per second of measured drift, as a percentage of nominal. The default " \
+    "asks for half a percent at 60 ms of drift. Raising it corrects faster " \
+    "but tracks the noise of the delay reported by the audio device." )
 
 #define AUDIO_DRIFT_INTEGRAL_GAIN_TEXT N_( \
     "Drift correction integral gain" )
 #define AUDIO_DRIFT_INTEGRAL_GAIN_LONGTEXT N_( \
     "Integral gain of the drift correction. This term settles on the standing " \
-    "resampling offset needed by an audio device whose clock does not run at " \
-    "exactly the nominal sample rate, which the proportional term alone " \
-    "cannot hold. Raising it converges sooner at the cost of overshooting." )
+    "offset in speed needed by an audio device whose clock does not run at " \
+    "exactly the nominal rate, which the proportional term alone cannot " \
+    "hold. Raising it converges sooner at the cost of overshooting." )
 
 
 static const char *const ppsz_replay_gain_mode[] = {
@@ -1552,10 +1556,12 @@ vlc_module_begin ()
 
     add_bool( "audio-time-stretch", true,
               AUDIO_TIME_STRETCH_TEXT, AUDIO_TIME_STRETCH_LONGTEXT, false )
-    add_integer( "aout-max-resampling", AOUT_MAX_RESAMPLING_CENTS,
-                 AUDIO_MAX_RESAMPLING_TEXT, AUDIO_MAX_RESAMPLING_LONGTEXT,
-                 true )
-        change_integer_range( 0, AOUT_MAX_RESAMPLING_CENTS_MAX )
+    add_float( "aout-timescale-min", AOUT_TIMESCALE_MIN,
+               AUDIO_TIMESCALE_MIN_TEXT, AUDIO_TIMESCALE_MIN_LONGTEXT, true )
+        change_float_range( AOUT_TIMESCALE_FLOOR, 100.f )
+    add_float( "aout-timescale-max", AOUT_TIMESCALE_MAX,
+               AUDIO_TIMESCALE_MAX_TEXT, AUDIO_TIMESCALE_MAX_LONGTEXT, true )
+        change_float_range( 100.f, AOUT_TIMESCALE_CEILING )
     add_float( "aout-drift-gain", AOUT_DRIFT_GAIN,
                AUDIO_DRIFT_GAIN_TEXT, AUDIO_DRIFT_GAIN_LONGTEXT, true )
         change_float_range( 0.f, 10000.f )
