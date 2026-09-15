@@ -421,6 +421,23 @@ lost:
     goto out;
 }
 
+/**
+ * Whether everything handed to the output has been played.
+ *
+ * For pacing on the end of playback without draining. A drain also stops the
+ * output, which is the wrong thing to do when more is about to follow it.
+ */
+bool aout_DecIsEmpty (audio_output_t *aout)
+{
+    aout_owner_t *owner = aout_owner (aout);
+    bool empty;
+
+    aout_OutputLock (aout);
+    empty = owner->sync.end == VLC_TICK_INVALID || mdate () >= owner->sync.end;
+    aout_OutputUnlock (aout);
+    return empty;
+}
+
 void aout_DecGetResetStats(audio_output_t *aout, unsigned *restrict lost,
                            unsigned *restrict played)
 {

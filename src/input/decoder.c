@@ -2088,7 +2088,16 @@ bool input_DecoderIsEmpty( decoder_t * p_dec )
     if( p_owner->fmt.i_cat == VIDEO_ES && p_owner->p_vout != NULL )
         b_empty = vout_IsEmpty( p_owner->p_vout );
     else if( p_owner->fmt.i_cat == AUDIO_ES )
-        b_empty = !p_owner->b_draining || p_owner->drained;
+    {
+        if( p_owner->b_draining )
+            b_empty = p_owner->drained;
+        else
+            /* Not draining: the fifo being empty only says the decoder has
+             * nothing left to hand over, not that any of it has been heard.
+             * Whoever is waiting for the end is waiting for the sound. */
+            b_empty = p_owner->p_aout == NULL
+                   || aout_DecIsEmpty( p_owner->p_aout );
+    }
     else
         b_empty = true; /* TODO subtitles support */
     vlc_mutex_unlock( &p_owner->lock );
