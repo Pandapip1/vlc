@@ -649,17 +649,26 @@ static void EsOutChangePosition( es_out_t *out, bool b_flush )
             p_es->i_pts_level = VLC_TICK_INVALID;
     }
 
-    for( int i = 0; i < p_sys->i_pgrm; i++ ) {
-        input_clock_Reset( p_sys->pgrm[i]->p_clock );
-        p_sys->pgrm[i]->i_last_pcr = VLC_TICK_INVALID;
-    }
+    /* A repeat carries the timeline straight on: the demuxer starts over but
+     * the timestamps it emits continue from where the last pass ended, so the
+     * reference still describes them. Resetting it, or buffering again for
+     * decoders that were deliberately left loaded, would make the new pass
+     * convert to dates that have already gone by. */
+    if( b_flush )
+    {
+        for( int i = 0; i < p_sys->i_pgrm; i++ )
+        {
+            input_clock_Reset( p_sys->pgrm[i]->p_clock );
+            p_sys->pgrm[i]->i_last_pcr = VLC_TICK_INVALID;
+        }
 
-    p_sys->b_buffering = true;
-    p_sys->i_buffering_extra_initial = 0;
-    p_sys->i_buffering_extra_stream = 0;
-    p_sys->i_buffering_extra_system = 0;
+        p_sys->b_buffering = true;
+        p_sys->i_buffering_extra_initial = 0;
+        p_sys->i_buffering_extra_stream = 0;
+        p_sys->i_buffering_extra_system = 0;
+        p_sys->i_prev_stream_level = -1;
+    }
     p_sys->i_preroll_end = -1;
-    p_sys->i_prev_stream_level = -1;
 }
 
 
