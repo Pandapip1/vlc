@@ -78,6 +78,8 @@ typedef struct
     struct
     {
         vlc_tick_t end; /**< Last seen PTS */
+        vlc_tick_t skip; /**< Material still to be jumped over */
+        vlc_tick_t skip_settles; /**< When a jump can have taken effect */
         unsigned resamp_start_drift; /**< Resampler drift absolute value */
         int resamp_type; /**< Resampler mode (FIXME: redundant / resampling) */
         bool discontinuity;
