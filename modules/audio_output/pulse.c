@@ -876,7 +876,13 @@ static void Flush(audio_output_t *aout, bool wait)
         pa_operation_unref(op);
     sys->first_pts = VLC_TICK_INVALID;
     stream_drop_held(aout);
-    stream_stop(s, aout);
+
+    /* A drain plays the queue out; it does not finish with the device. What
+     * follows one is usually the next pass of the same item, and stopping the
+     * stream means starting it again for that. The idle timeout parks it if
+     * nothing more arrives. */
+    if (!wait)
+        stream_stop(s, aout);
 
     pa_threaded_mainloop_unlock(sys->mainloop);
 }
