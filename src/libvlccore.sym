@@ -26,7 +26,6 @@ aout_FiltersDelete
 aout_FiltersDrain
 aout_FiltersFlush
 aout_FiltersPlay
-aout_FiltersAdjustResampling
 block_Alloc
 block_FifoCount
 block_FifoEmpty

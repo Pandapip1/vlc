@@ -232,6 +232,33 @@ static const char *const ppsz_stereo_mode_texts[] = { N_("Unset"),
     "This allows playing audio at lower or higher speed without " \
     "affecting the audio pitch" )
 
+#define AUDIO_MAX_RESAMPLING_TEXT N_( \
+    "Maximum drift correction by resampling (cents)" )
+#define AUDIO_MAX_RESAMPLING_LONGTEXT N_( \
+    "How much resampling may be used to correct drift between the stream and " \
+    "the audio device, in cents of detune (100 cents is one semitone). " \
+    "Resampling shifts pitch as well as speed, so this bounds how far " \
+    "playback can be detuned while a drift is being corrected. Lower it if " \
+    "you can hear the correction, at the cost of slower resynchronisation. " \
+    "Set it to 0 to never correct drift by resampling." )
+
+#define AUDIO_DRIFT_GAIN_TEXT N_( \
+    "Drift correction gain" )
+#define AUDIO_DRIFT_GAIN_LONGTEXT N_( \
+    "Proportional gain of the drift correction: how much resampling is asked " \
+    "for per second of measured drift, as a fraction of the sample rate. The " \
+    "default asks for the whole of the \"aout-max-resampling\" bound at 60 ms " \
+    "of drift. Raising it corrects faster but tracks the noise of the delay " \
+    "reported by the audio device." )
+
+#define AUDIO_DRIFT_INTEGRAL_GAIN_TEXT N_( \
+    "Drift correction integral gain" )
+#define AUDIO_DRIFT_INTEGRAL_GAIN_LONGTEXT N_( \
+    "Integral gain of the drift correction. This term settles on the standing " \
+    "resampling offset needed by an audio device whose clock does not run at " \
+    "exactly the nominal sample rate, which the proportional term alone " \
+    "cannot hold. Raising it converges sooner at the cost of overshooting." )
+
 
 static const char *const ppsz_replay_gain_mode[] = {
     "none", "track", "album" };
@@ -1525,6 +1552,17 @@ vlc_module_begin ()
 
     add_bool( "audio-time-stretch", true,
               AUDIO_TIME_STRETCH_TEXT, AUDIO_TIME_STRETCH_LONGTEXT, false )
+    add_integer( "aout-max-resampling", AOUT_MAX_RESAMPLING_CENTS,
+                 AUDIO_MAX_RESAMPLING_TEXT, AUDIO_MAX_RESAMPLING_LONGTEXT,
+                 true )
+        change_integer_range( 0, AOUT_MAX_RESAMPLING_CENTS_MAX )
+    add_float( "aout-drift-gain", AOUT_DRIFT_GAIN,
+               AUDIO_DRIFT_GAIN_TEXT, AUDIO_DRIFT_GAIN_LONGTEXT, true )
+        change_float_range( 0.f, 10000.f )
+    add_float( "aout-drift-integral-gain", AOUT_DRIFT_INTEGRAL_GAIN,
+               AUDIO_DRIFT_INTEGRAL_GAIN_TEXT,
+               AUDIO_DRIFT_INTEGRAL_GAIN_LONGTEXT, true )
+        change_float_range( 0.f, 10000.f )
 
     set_subcategory( SUBCAT_AUDIO_AOUT )
     add_module( "aout", "audio output", NULL, AOUT_TEXT, AOUT_LONGTEXT,

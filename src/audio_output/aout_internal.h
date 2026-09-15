@@ -30,12 +30,6 @@
 /* Max input rate factor (1/4 -> 4) */
 # define AOUT_MAX_INPUT_RATE (4)
 
-enum {
-    AOUT_RESAMPLING_NONE=0,
-    AOUT_RESAMPLING_UP,
-    AOUT_RESAMPLING_DOWN
-};
-
 struct aout_request_vout
 {
     struct vout_thread_t  *(*pf_request_vout)( void *, struct vout_thread_t *,
@@ -80,8 +74,11 @@ typedef struct
         vlc_tick_t end; /**< Last seen PTS */
         vlc_tick_t skip; /**< Material still to be jumped over */
         vlc_tick_t skip_settles; /**< When a jump can have taken effect */
-        unsigned resamp_start_drift; /**< Resampler drift absolute value */
-        int resamp_type; /**< Resampler mode (FIXME: redundant / resampling) */
+        vlc_tick_t update; /**< When the correction was last updated */
+        float drift_kp; /**< Proportional gain of the drift correction */
+        float drift_ki; /**< Integral gain of the drift correction */
+        float drift_integral; /**< Correction held by the integral term */
+        bool drift_bound; /**< Correction is pinned at the bound */
         bool discontinuity;
     } sync;
 
@@ -181,7 +178,8 @@ static inline void aout_SetWavePhysicalChannels(audio_sample_format_t *fmt)
 }
 
 /* From filters.c */
-bool aout_FiltersCanResample (aout_filters_t *filters);
+float aout_FiltersGetMaxDetune (aout_filters_t *filters);
+float aout_FiltersSetDetune (aout_filters_t *filters, float cents);
 
 void aout_ChangeViewpoint(audio_output_t *aout,
                           const vlc_viewpoint_t *p_viewpoint);
