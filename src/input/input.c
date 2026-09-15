@@ -557,6 +557,8 @@ bool input_Stopped( input_thread_t *input )
  * MainLoopDemux
  * It asks the demuxer to demux some data
  */
+static bool MainLoopRepeatsInPlace( input_thread_t * );
+
 static void MainLoopDemux( input_thread_t *p_input, bool *pb_changed )
 {
     input_thread_private_t* p_priv = input_priv(p_input);
@@ -600,7 +602,13 @@ static void MainLoopDemux( input_thread_t *p_input, bool *pb_changed )
     {
         msg_Dbg( p_input, "EOF reached" );
         p_priv->master->b_eof = true;
-        es_out_Eos(p_priv->p_es_out);
+
+        /* A drain empties the output and stops it, so the next pass has to
+         * start it again - heard as a gap at every loop. The decoders still
+         * report empty once what they produced has been played, which is what
+         * the main loop waits for. */
+        if( !MainLoopRepeatsInPlace( p_input ) )
+            es_out_Eos(p_priv->p_es_out);
     }
     else if( i_ret == VLC_DEMUXER_EGENERIC )
     {
@@ -614,6 +622,22 @@ static void MainLoopDemux( input_thread_t *p_input, bool *pb_changed )
  * the main loop between queueing the seek and it being applied. */
 #define INPUT_REPEAT_MAX_PENDING 5
 
+
+/**
+ * Whether reaching the end will repeat the item where it stands rather than
+ * finish it: the test MainLoopTryRepeat() applies, less the pending count.
+ */
+static bool MainLoopRepeatsInPlace( input_thread_t *p_input )
+{
+    int i_repeat = var_GetInteger( p_input, "input-repeat" );
+
+    if( i_repeat < 0 )
+        return false;
+    if( i_repeat == 0 )
+        return var_GetBool( p_input, "can-seek" )
+            && var_InheritBool( p_input, "repeat" );
+    return true;
+}
 
 static int MainLoopTryRepeat( input_thread_t *p_input )
 {
@@ -790,7 +814,12 @@ static void MainLoop( input_thread_t *p_input, bool b_interactive )
             else
             {
                 if( MainLoopTryRepeat( p_input ) )
+                {
+                    /* Not repeating after all, so it was an end: drain what
+                     * was left undrained above. */
+                    es_out_Eos( input_priv(p_input)->p_es_out );
                     break;
+                }
             }
 
             /* Update interface and statistics */
