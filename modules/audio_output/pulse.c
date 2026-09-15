@@ -617,6 +617,21 @@ static void context_cb(pa_context *ctx, pa_subscription_event_type_t type,
 
 /*** VLC audio output callbacks ***/
 
+static int LatencyGet(audio_output_t *aout, vlc_tick_t *restrict latency)
+{
+    aout_sys_t *sys = aout->sys;
+    int ret = -1;
+
+    pa_threaded_mainloop_lock(sys->mainloop);
+    if (sys->device_latency != VLC_TICK_INVALID)
+    {
+        *latency = sys->device_latency;
+        ret = 0;
+    }
+    pa_threaded_mainloop_unlock(sys->mainloop);
+    return ret;
+}
+
 static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
 {
     aout_sys_t *sys = aout->sys;
@@ -1348,6 +1363,7 @@ static int Open(vlc_object_t *obj)
     aout->start = Start;
     aout->stop = Stop;
     aout->time_get = TimeGet;
+    aout->latency_get = LatencyGet;
     aout->play = Play;
     aout->pause = Pause;
     aout->flush = Flush;

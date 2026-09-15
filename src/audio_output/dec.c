@@ -471,6 +471,17 @@ lost:
  * to demux and decode before any sound reaches the output, and what follows
  * is queued behind what is left rather than in place of it.
  */
+vlc_tick_t aout_DecGetLatency (audio_output_t *aout)
+{
+    vlc_tick_t latency;
+
+    aout_OutputLock (aout);
+    if (aout_OutputLatencyGet (aout, &latency) != 0)
+        latency = 0;
+    aout_OutputUnlock (aout);
+    return latency;
+}
+
 bool aout_DecIsEmpty (audio_output_t *aout)
 {
     aout_owner_t *owner = aout_owner (aout);
