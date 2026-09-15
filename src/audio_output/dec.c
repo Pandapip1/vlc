@@ -422,10 +422,12 @@ lost:
 }
 
 /**
- * Whether everything handed to the output has been played.
+ * Whether what was handed to the output has been played, or is about to be.
  *
- * For pacing on the end of playback without draining. A drain also stops the
- * output, which is the wrong thing to do when more is about to follow it.
+ * For pacing on the end of playback without draining, which would also stop
+ * the output. Reported an AOUT_MAX_PTS_ADVANCE early: whoever is waiting has
+ * to demux and decode before any sound reaches the output, and what follows
+ * is queued behind what is left rather than in place of it.
  */
 bool aout_DecIsEmpty (audio_output_t *aout)
 {
@@ -433,7 +435,8 @@ bool aout_DecIsEmpty (audio_output_t *aout)
     bool empty;
 
     aout_OutputLock (aout);
-    empty = owner->sync.end == VLC_TICK_INVALID || mdate () >= owner->sync.end;
+    empty = owner->sync.end == VLC_TICK_INVALID
+         || mdate () + AOUT_MAX_PTS_ADVANCE >= owner->sync.end;
     aout_OutputUnlock (aout);
     return empty;
 }
