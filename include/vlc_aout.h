@@ -160,6 +160,14 @@ struct audio_output
       * \return 0 on success, non-zero on failure or lack of data
       * \note A stream must have been started when called.
       */
+    int (*latency_get)(audio_output_t *, vlc_tick_t *latency);
+    /**< Reports the fixed latency of the playback device (optional, may be
+      * NULL).
+      * \param latency pointer to the time between a sample reaching the
+      *                device and that sample being heard [OUT]
+      * \return 0 on success, non-zero on failure or lack of data
+      * \note A stream must have been started when called.
+      */
     void (*play)(audio_output_t *, block_t *);
     /**< Queues a block of samples for playback (mandatory, cannot be NULL).
       * \note A stream must have been started when called.

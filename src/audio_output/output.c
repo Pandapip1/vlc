@@ -601,6 +601,15 @@ int aout_OutputTimeGet (audio_output_t *aout, vlc_tick_t *delay)
     return aout->time_get (aout, delay);
 }
 
+int aout_OutputLatencyGet (audio_output_t *aout, vlc_tick_t *latency)
+{
+    aout_OutputAssertLocked (aout);
+
+    if (aout->latency_get == NULL)
+        return -1;
+    return aout->latency_get (aout, latency);
+}
+
 /**
  * Plays a decoded audio buffer.
  * \note This can only be called after a successful aout_OutputNew().

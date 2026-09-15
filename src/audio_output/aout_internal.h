@@ -127,6 +127,7 @@ void aout_Destroy (audio_output_t *);
 int aout_OutputNew(audio_output_t *, audio_sample_format_t *,
                    aout_filters_cfg_t *filters_cfg);
 int aout_OutputTimeGet(audio_output_t *, vlc_tick_t *);
+int aout_OutputLatencyGet(audio_output_t *, vlc_tick_t *);
 void aout_OutputPlay(audio_output_t *, block_t *);
 void aout_OutputPause( audio_output_t * p_aout, bool, vlc_tick_t );
 void aout_OutputFlush( audio_output_t * p_aout, bool );
@@ -157,6 +158,7 @@ void aout_DecGetResetStats(audio_output_t *, unsigned *, unsigned *);
 void aout_DecChangePause(audio_output_t *, bool b_paused, vlc_tick_t i_date);
 void aout_DecFlush(audio_output_t *, bool wait);
 bool aout_DecIsEmpty(audio_output_t *);
+vlc_tick_t aout_DecGetLatency(audio_output_t *);
 void aout_RequestRestart (audio_output_t *, unsigned);
 
 static inline void aout_InputRequestRestart(audio_output_t *aout)
