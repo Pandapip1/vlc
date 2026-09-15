@@ -78,7 +78,7 @@ struct aout_sys_t
         block_t *first;
         block_t **last;
     } fifo;
-    vlc_tick_t device_latency; /**< What the device adds, once known */
+    vlc_tick_t device_latency; /**< What the device adds, or VLC_TICK_INVALID */
 
     pa_volume_t volume_force; /**< Forced volume (stream must be NULL) */
     pa_stream_flags_t flags_force; /**< Forced flags (stream must be NULL) */
@@ -262,7 +262,7 @@ static vlc_tick_t stream_start_delay(audio_output_t *aout, pa_stream *s)
 {
     aout_sys_t *sys = aout->sys;
 
-    if (sys->device_latency != 0)
+    if (sys->device_latency != VLC_TICK_INVALID)
         return sys->device_latency;
 
     /* Not yet known: nothing better than what the stream says. */
@@ -362,7 +362,7 @@ static void stream_drop_held(audio_output_t *aout)
 static void stream_forget_device(audio_output_t *aout)
 {
     stream_drop_held(aout);
-    aout->sys->device_latency = 0;
+    aout->sys->device_latency = VLC_TICK_INVALID;
 }
 
 static void stream_stop(pa_stream *s, audio_output_t *aout)
@@ -687,7 +687,8 @@ static void stream_try_start(pa_stream *s, audio_output_t *aout)
     const pa_timing_info *ti;
     vlc_tick_t latency, wait;
 
-    if (sys->device_latency != 0 || sys->first_pts == VLC_TICK_INVALID
+    if (sys->device_latency != VLC_TICK_INVALID
+     || sys->first_pts == VLC_TICK_INVALID
      || !stream_clock_is_synced(s))
         return;
 
@@ -722,7 +723,7 @@ static void stream_write_cb(pa_stream *s, size_t nbytes, void *userdata)
     aout_sys_t *sys = aout->sys;
     vlc_tick_t queued, room;
 
-    if (sys->device_latency != 0)
+    if (sys->device_latency != VLC_TICK_INVALID)
         return;
 
     /* Only ever up to the target fill. The server will take as much as
@@ -767,9 +768,9 @@ static void Play(audio_output_t *aout, block_t *block)
     if (sys->first_pts == VLC_TICK_INVALID)
         sys->first_pts = block->i_pts;
 
-    if (sys->device_latency == 0)
+    if (sys->device_latency == VLC_TICK_INVALID)
     {
-        /* What the device costs cannot be read until the stream has run for
+        /* The device latency cannot be read until the stream has run for
          * as long as the device holds (see stream_clock_is_synced), and this
          * sink reports nothing for itself either. Run it on silence until
          * then, holding the audio back meanwhile: starting on the corked
@@ -1330,7 +1331,7 @@ static int Open(vlc_object_t *obj)
     sys->sinks = NULL;
     sys->fifo.first = NULL;
     sys->fifo.last = &sys->fifo.first;
-    sys->device_latency = 0;
+    sys->device_latency = VLC_TICK_INVALID;
 
     aout->sys = sys;
     aout->start = Start;
