@@ -171,6 +171,7 @@ struct es_out_sys_t
 
     /* Used for buffering */
     bool        b_buffering;
+    bool        b_repeated; /* the last reposition was a repeat of the item */
     vlc_tick_t  i_buffering_extra_initial;
     vlc_tick_t  i_buffering_extra_stream;
     vlc_tick_t  i_buffering_extra_system;
@@ -337,6 +338,7 @@ es_out_t *input_EsOutNew( input_thread_t *p_input, int i_rate )
     p_sys->i_rate = i_rate;
 
     p_sys->b_buffering = true;
+    p_sys->b_repeated = false;
     p_sys->i_preroll_end = -1;
     p_sys->i_prev_stream_level = -1;
 
@@ -2569,6 +2571,19 @@ static int EsOutControlLocked( es_out_t *out, int i_query, va_list args )
                     for( int i = 0; i < p_sys->i_pgrm; i++ )
                       input_clock_Reset( p_sys->pgrm[i]->p_clock );
                 }
+                else if( p_sys->b_repeated )
+                {
+                    /* The first PCR of a repeated pass reads late because the
+                     * demuxer had to seek to produce it, not because playback
+                     * is behind. Rebuffering for that throws away the audio
+                     * that was deliberately kept to cover the loop, and stops
+                     * the output, which is heard. Take the jitter and carry
+                     * on. */
+                    msg_Dbg( p_sys->p_input,
+                             "ES_OUT_SET_(GROUP_)PCR is late after a repeat "
+                             "(pts_delay increased to %d ms)",
+                             (int)(i_pts_delay/1000) );
+                }
                 else
                 {
                     msg_Err( p_sys->p_input,
@@ -2841,6 +2856,7 @@ static int EsOutControlLocked( es_out_t *out, int i_query, va_list args )
          * decoded needs discarding, and keeping it is what makes the loop
          * inaudible. */
         EsOutChangePosition( out, false );
+        p_sys->b_repeated = true;
         return VLC_SUCCESS;
 
     case ES_OUT_SET_FRAME_NEXT:
