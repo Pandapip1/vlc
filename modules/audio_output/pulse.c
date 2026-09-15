@@ -687,9 +687,7 @@ static void stream_try_start(pa_stream *s, audio_output_t *aout)
     const pa_timing_info *ti;
     vlc_tick_t latency, wait;
 
-    if (sys->device_latency != VLC_TICK_INVALID
-     || sys->first_pts == VLC_TICK_INVALID
-     || !stream_clock_is_synced(s))
+    if (sys->device_latency != VLC_TICK_INVALID || !stream_clock_is_synced(s))
         return;
 
     ti = pa_stream_get_timing_info(s);
@@ -699,13 +697,17 @@ static void stream_try_start(pa_stream *s, audio_output_t *aout)
      || latency >= VLC_TICK_FROM_SEC(5))
         return;
 
+    sys->device_latency = ti->sink_usec + ti->transport_usec;
+    msg_Dbg(aout, "clock synced: device %"PRId64" us", sys->device_latency);
+
+    if (sys->first_pts == VLC_TICK_INVALID)
+        return; /* nothing held back; the start can be timed from here */
+
     /* The silence written to get here sits in front of the audio, so drop
      * whatever of it is not needed to reach the start. */
     wait = (sys->first_pts - mdate()) - latency;
 
-    sys->device_latency = ti->sink_usec + ti->transport_usec;
-    msg_Dbg(aout, "clock synced: device %"PRId64" us, latency %"PRId64" us, "
-            "starting in %"PRId64" us", sys->device_latency, latency, wait);
+    msg_Dbg(aout, "starting in %"PRId64" us", wait);
     stream_drain_fifo(s, aout, wait);
 }
 
@@ -1257,6 +1259,33 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
     sys->flags_force = PA_STREAM_NOFLAGS;
     free(sys->sink_force);
     sys->sink_force = NULL;
+
+    /* Settle the clock before playback rather than during it. Measuring takes
+     * as long as the device holds, and doing it once audio is flowing leaves
+     * that audio late by the measurement - which the core makes up by dropping
+     * a chunk of it, heard as a splice. Nothing is playing yet, so the wait
+     * only adds to start-up latency. */
+    if (sys->device_latency == VLC_TICK_INVALID)
+    {
+        stream_silence(s, aout, AOUT_MIN_PREPARE_TIME);
+        stream_start_now(s, aout);
+
+        for (unsigned i = 0; i < 100; i++)
+        {
+            if (sys->device_latency != VLC_TICK_INVALID)
+                break;
+
+            pa_threaded_mainloop_unlock(sys->mainloop);
+            msleep(VLC_TICK_FROM_MS(10));
+            pa_threaded_mainloop_lock(sys->mainloop);
+            stream_try_start(s, aout);
+        }
+
+        if (sys->device_latency == VLC_TICK_INVALID)
+            msg_Dbg(aout, "clock did not settle; measuring as it plays");
+        else
+            stream_stop(s, aout); /* start it again when the audio is due */
+    }
 
     if (encoding == PA_ENCODING_PCM)
     {
