@@ -54,8 +54,42 @@
  * above which upsampling will be performed */
 #define AOUT_MAX_PTS_DELAY              (3 * CLOCK_FREQ / 50)
 
-/* Max acceptable resampling (in %) */
-#define AOUT_MAX_RESAMPLING             10
+/* Default for "aout-max-resampling": how far the drift correction may detune
+ * the stream, in cents (hundredths of a semitone).
+ *
+ * Resampling changes pitch as well as speed, so the bound is an interval
+ * rather than a fraction of the sample rate. It only has to cover genuine
+ * clock drift between the source and the device, a few tens of ppm on real
+ * hardware; a larger offset is latency rather than drift, and is jumped over
+ * instead of detuned away. Zero disables correction by resampling. */
+#define AOUT_MAX_RESAMPLING_CENTS       9
+
+/** Highest value accepted for "aout-max-resampling" (a whole tone) */
+#define AOUT_MAX_RESAMPLING_CENTS_MAX   200
+
+/* Defaults for "aout-drift-gain" and "aout-drift-integral-gain", the gains of
+ * the controller that turns the measured drift into a detune. Its input is a
+ * drift in seconds and its output an interval in cents, so the proportional
+ * gain is in cents/s and the integral one in cents/s^2.
+ *
+ * A detune of u closes the drift at a rate proportional to u, so the loop is a
+ * plain integrator and the PI controller makes it second order. These keep the
+ * ratio between the two terms that gives a damping ratio of 0.89, and let the
+ * proportional term alone ask for the whole of the default bound at one
+ * AOUT_MAX_PTS_DELAY of drift:
+ * AOUT_MAX_RESAMPLING_CENTS / (AOUT_MAX_PTS_DELAY / CLOCK_FREQ). */
+#define AOUT_DRIFT_GAIN                 150.f
+#define AOUT_DRIFT_INTEGRAL_GAIN        3.75f
+
+/* Default for "aout-drift-slew": the time constant over which the detune
+ * follows what the controller asks for, in seconds.
+ *
+ * The drift is read with tens of milliseconds of noise - sixteen on an A2DP
+ * sink - and the proportional term turns that straight into detune. Applied as
+ * it comes, it wobbles the pitch at the rate the output is fed rather than
+ * holding an offset. This has to sit well above that noise and well below the
+ * drift it tracks. */
+#define AOUT_DRIFT_SLEW                 1.f
 
 #include "vlc_es.h"
 
@@ -404,7 +438,6 @@ VLC_API aout_filters_t *aout_FiltersNew(vlc_object_t *,
 VLC_API void aout_FiltersDelete(vlc_object_t *, aout_filters_t *);
 #define aout_FiltersDelete(o,f) \
         aout_FiltersDelete(VLC_OBJECT(o),f)
-VLC_API bool aout_FiltersAdjustResampling(aout_filters_t *, int);
 VLC_API block_t *aout_FiltersPlay(aout_filters_t *, block_t *, int rate);
 VLC_API block_t *aout_FiltersDrain(aout_filters_t *);
 VLC_API void     aout_FiltersFlush(aout_filters_t *);

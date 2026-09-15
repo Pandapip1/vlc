@@ -108,10 +108,17 @@ error:
 
 
     owner->sync.end = VLC_TICK_INVALID;
-    owner->sync.resamp_type = AOUT_RESAMPLING_NONE;
     owner->sync.discontinuity = true;
     owner->sync.skip = 0;
     owner->sync.skip_settles = 0;
+    owner->sync.update = VLC_TICK_INVALID;
+    owner->sync.drift_kp = var_InheritFloat (p_aout, "aout-drift-gain");
+    owner->sync.drift_ki =
+        var_InheritFloat (p_aout, "aout-drift-integral-gain");
+    owner->sync.drift_slew = var_InheritFloat (p_aout, "aout-drift-slew");
+    owner->sync.drift_integral = 0.f;
+    owner->sync.drift_detune = 0.f;
+    owner->sync.drift_bound = false;
     aout_OutputUnlock (p_aout);
 
     atomic_init (&owner->buffers_lost, 0);
@@ -171,7 +178,9 @@ static int aout_CheckReady (audio_output_t *aout)
 
         msg_Dbg (aout, "restarting filters...");
         owner->sync.end = VLC_TICK_INVALID;
-        owner->sync.resamp_type = AOUT_RESAMPLING_NONE;
+        /* The new filters start with no correction, but the controller keeps
+         * what it had learnt and puts it back on the next update. */
+        owner->sync.update = VLC_TICK_INVALID;
 
         if (owner->mixer_format.i_format)
         {
@@ -331,59 +340,85 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
         drift = 0;
     }
 
-    if (!aout_FiltersCanResample(owner->filters))
-        return;
+    /* A PI controller on the drift. No derivative term: the drift is
+     * quantised by however the output reports its delay, and differentiating
+     * that would amplify the noise the slew below is there to keep out. */
+    const float max = aout_FiltersGetMaxDetune (owner->filters);
 
-    /* Resampling */
-    if (drift > +AOUT_MAX_PTS_DELAY
-     && owner->sync.resamp_type != AOUT_RESAMPLING_UP)
-    {
-        msg_Warn (aout, "playback too late (%"PRId64"): up-sampling",
-                  drift);
-        owner->sync.resamp_type = AOUT_RESAMPLING_UP;
-        owner->sync.resamp_start_drift = +drift;
-    }
-    if (drift < -AOUT_MAX_PTS_ADVANCE
-     && owner->sync.resamp_type != AOUT_RESAMPLING_DOWN)
-    {
-        msg_Warn (aout, "playback too early (%"PRId64"): down-sampling",
-                  drift);
-        owner->sync.resamp_type = AOUT_RESAMPLING_DOWN;
-        owner->sync.resamp_start_drift = -drift;
-    }
+    if (max <= 0.f)
+        return; /* correction by resampling is disabled */
 
-    if (owner->sync.resamp_type == AOUT_RESAMPLING_NONE)
-        return; /* Everything is fine. Nothing to do. */
-
-    if (llabs (drift) > 2 * owner->sync.resamp_start_drift)
-    {   /* Resampling is not closing the gap - it is bounded, and cannot pull
-         * back more than a few permille. Hand the difference to the skip,
-         * which jumps over it in one go, and keep the correction: it
-         * describes the device and is still right. */
-        msg_Warn (aout, "timing screwed (drift: %"PRId64" us): "
-                  "jumping instead", drift);
-        if (drift > 0 && mdate () >= owner->sync.skip_settles)
-        {
-            owner->sync.skip += drift;
-            owner->sync.skip_settles = mdate () + delay;
-        }
+    if (owner->sync.discontinuity || owner->sync.skip > 0
+     || now < owner->sync.skip_settles)
+    {   /* After a jump the drift still reads the old timeline, and the offset
+         * either side of a discontinuity is not drift at all. */
+        owner->sync.update = now;
         return;
     }
 
-    /* Resampling has been triggered earlier. This checks if it needs to be
-     * increased or decreased. Resampling rate changes must be kept slow for
-     * the comfort of listeners. */
-    int adj = (owner->sync.resamp_type == AOUT_RESAMPLING_UP) ? +2 : -2;
+    const float commanded = owner->sync.drift_kp * (drift / (float)CLOCK_FREQ)
+                            + owner->sync.drift_integral;
+    const float target = (commanded > +max) ? +max
+                       : (commanded < -max) ? -max : commanded;
+    const bool bound = commanded != target;
 
-    if (2 * llabs (drift) <= owner->sync.resamp_start_drift)
-        /* If the drift has been reduced from more than half its initial
-         * value, then it is time to switch back the resampling direction. */
-        adj *= -1;
+    vlc_tick_t dt = (owner->sync.update != VLC_TICK_INVALID)
+                    ? now - owner->sync.update : 0;
 
-    if (!aout_FiltersAdjustResampling (owner->filters, adj))
-    {   /* Everything is back to normal: stop resampling. */
-        owner->sync.resamp_type = AOUT_RESAMPLING_NONE;
-        msg_Dbg (aout, "resampling stopped (drift: %"PRId64" us)", drift);
+    /* A gap in the decoder output is not evidence of drift for its whole
+     * length; the drift is a reading, not an average over the gap. */
+    if (dt > CLOCK_FREQ)
+        dt = CLOCK_FREQ;
+
+    const float seconds = (dt > 0) ? dt / (float)CLOCK_FREQ : 0.f;
+
+    /* The drift reading is noisy - sixteen milliseconds on an A2DP sink - and
+     * the proportional term turns that straight into detune. Following it
+     * wobbles the pitch at the rate the output is fed rather than holding an
+     * offset. Slew towards what the controller asks for instead, over a time
+     * constant well above the noise and well below the drift being tracked. */
+    if (seconds > 0.f)
+        owner->sync.drift_detune += (target - owner->sync.drift_detune)
+                                    * seconds / (owner->sync.drift_slew
+                                                 + seconds);
+
+    aout_FiltersSetDetune (owner->filters, owner->sync.drift_detune);
+
+    if (seconds > 0.f)
+    {
+        float i = owner->sync.drift_integral
+                  + owner->sync.drift_ki * (drift / (float)CLOCK_FREQ) * seconds;
+
+        /* Integrating against what was asked rather than what the bound let
+         * through would have the integral answer for a correction never made,
+         * and wind up at the bound. Feed the difference back instead. The slew
+         * is deliberate and is not fed back: it is a lag, not a refusal. */
+        if (owner->sync.drift_kp > 0.f)
+            i += (target - commanded)
+                 * (owner->sync.drift_ki / owner->sync.drift_kp) * seconds;
+
+        /* The integral on its own may not ask for more than the bound. */
+        owner->sync.drift_integral = (i > +max) ? +max
+                                   : (i < -max) ? -max : i;
+    }
+    owner->sync.update = now;
+
+    if (bound != owner->sync.drift_bound)
+    {
+        owner->sync.drift_bound = bound;
+
+        /* At the bound the drift is no longer being answered: what is left
+         * accumulates until it is large enough to be jumped over, which is
+         * heard. Either the device is further off nominal than the bound
+         * allows, or what is being corrected is not drift. */
+        if (bound)
+            msg_Warn (aout, "drift correction at its limit of %.0f cents "
+                      "(drift: %"PRId64" us): raise aout-max-resampling to "
+                      "correct it, at the cost of audible detuning", max,
+                      drift);
+        else
+            msg_Dbg (aout, "drift correction back within its limit "
+                     "(drift: %"PRId64" us)", drift);
     }
 }
 
@@ -516,7 +551,12 @@ void aout_DecChangePause (audio_output_t *aout, bool paused, vlc_tick_t date)
             owner->sync.end += date;
     }
     if (owner->mixer_format.i_format)
+    {
         aout_OutputPause (aout, paused, date);
+    }
+    /* Nothing was played while paused: the correction stays, only the interval
+     * the integral is about to be fed must not span the pause. */
+    owner->sync.update = VLC_TICK_INVALID;
     aout_OutputUnlock (aout);
 }
 
@@ -540,8 +580,10 @@ void aout_DecFlush (audio_output_t *aout, bool wait)
     }
 
     /* The offset a flush leaves behind is not drift; do not resample to
-     * catch it up. */
+     * catch it up. The correction accumulated so far describes the device and
+     * is still right, so it is kept. */
     owner->sync.discontinuity = true;
+    owner->sync.update = VLC_TICK_INVALID;
     aout_OutputUnlock (aout);
 }
 

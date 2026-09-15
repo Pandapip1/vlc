@@ -28,6 +28,7 @@
 # include "config.h"
 #endif
 
+#include <math.h>
 #include <string.h>
 #include <assert.h>
 
@@ -347,6 +348,7 @@ struct aout_filters
         (either the scaletempo filter or a resampler) */
     filter_t *resampler; /**< The resampler */
     int resampling; /**< Current resampling (Hz) */
+    int max_cents; /**< Bound on the detune (cents); 0 disables it */
 
     unsigned count; /**< Number of filters */
     filter_t *tab[AOUT_MAX_FILTERS]; /**< Configured user filters
@@ -508,6 +510,7 @@ aout_filters_t *aout_FiltersNew (vlc_object_t *obj,
         return NULL;
 
     filters->rate_filter = NULL;
+    filters->max_cents = 0;
     filters->resampler = NULL;
     filters->resampling = 0;
     filters->count = 0;
@@ -647,6 +650,22 @@ aout_filters_t *aout_FiltersNew (vlc_object_t *obj,
         msg_Err (obj, "cannot setup a resampler");
         goto error;
     }
+    if (filters->resampler != NULL)
+    {
+        /* Bound the drift correction the caller may ask for. It is kept as the
+         * interval it is given in rather than turned into a rate offset here:
+         * cents are logarithmic, so a bound applied to the offset would not be
+         * symmetric in the unit the bound is stated in, and the controller
+         * clamps its own integral against this same figure. */
+        int64_t cents = var_InheritInteger (obj, "aout-max-resampling");
+
+        if (cents < 0)
+            cents = 0;
+        else if (cents > AOUT_MAX_RESAMPLING_CENTS_MAX)
+            cents = AOUT_MAX_RESAMPLING_CENTS_MAX;
+
+        filters->max_cents = cents;
+    }
     if (filters->rate_filter == NULL)
         filters->rate_filter = filters->resampler;
 
@@ -679,21 +698,49 @@ void aout_FiltersDelete (vlc_object_t *obj, aout_filters_t *filters)
     free (filters);
 }
 
-bool aout_FiltersCanResample (aout_filters_t *filters)
-{
-    return (filters->resampler != NULL);
-}
-
-bool aout_FiltersAdjustResampling (aout_filters_t *filters, int adjust)
+/**
+ * Returns the largest drift correction the resampler will apply, as a fraction
+ * of the nominal sample rate. A zeroed bound disables drift correction by
+ * resampling entirely; the resampler itself may still be needed for plain rate
+ * conversion.
+ */
+float aout_FiltersGetMaxDetune (aout_filters_t *filters)
 {
     if (filters->resampler == NULL)
-        return false;
+        return 0.f;
 
-    if (adjust)
-        filters->resampling += adjust;
-    else
-        filters->resampling = 0;
-    return filters->resampling != 0;
+    return filters->max_cents;
+}
+
+/**
+ * Sets the drift correction applied by the resampler, as a fraction of the
+ * nominal sample rate. Out of bound values are clamped: without that this
+ * ramps into the kHz range, as the rate at which the drift is made up is
+ * proportional to the offset, and the offset is applied to the resampler
+ * input rate.
+ */
+float aout_FiltersSetDetune (aout_filters_t *filters, float cents)
+{
+    if (filters->resampler == NULL)
+        return 0.f;
+
+    const unsigned rate = filters->resampler->fmt_in.audio.i_rate;
+    const float max = filters->max_cents;
+
+    /* Clamped as an interval, so that as much detuning is allowed downwards as
+     * upwards. Clamping the rate offset instead would not: a ratio of 1 + x is
+     * a smaller interval than 1 - x is. */
+    if (cents > +max)
+        cents = +max;
+    else if (cents < -max)
+        cents = -max;
+
+    filters->resampling = lroundf (rate * (exp2f (cents / 1200.f) - 1.f));
+
+    /* What the rate offset amounts to, which is not quite what was asked for:
+     * it is a whole number of Hz, and it was clamped. The caller needs to know
+     * so that it can answer for the difference. */
+    return 1200.f * log2f (1.f + filters->resampling / (float)rate);
 }
 
 block_t *aout_FiltersPlay (aout_filters_t *filters, block_t *block, int rate)
