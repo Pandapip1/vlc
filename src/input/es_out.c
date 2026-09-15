@@ -48,6 +48,7 @@
 #include "info.h"
 #include "item.h"
 
+#include "../audio_output/aout_internal.h"
 #include "../stream_output/stream_output.h"
 
 #include <vlc_iso_lang.h>
@@ -747,7 +748,19 @@ static void EsOutDecodersStopBuffering( es_out_t *out, bool b_forced )
     input_resource_TerminateVout( input_priv(p_sys->p_input)->p_resource );
 
     /* */
-    const vlc_tick_t i_wakeup_delay = 10*1000; /* FIXME CLEANUP thread wake up time*/
+    vlc_tick_t i_wakeup_delay = 10*1000; /* FIXME CLEANUP thread wake up time*/
+
+    /* The first sample has to reach the device early enough for it to have
+     * come out by the time it is due, or it is born late and the output has
+     * to skip over the difference. */
+    audio_output_t *p_aout =
+        input_resource_HoldAout( input_priv(p_sys->p_input)->p_resource );
+    if( p_aout != NULL )
+    {
+        i_wakeup_delay += aout_DecGetLatency( p_aout );
+        vlc_object_release( p_aout );
+    }
+
     const vlc_tick_t i_current_date = p_sys->b_paused ? p_sys->i_pause_date : mdate();
 
     input_clock_ChangeSystemOrigin( p_sys->p_pgrm->p_clock, true,
