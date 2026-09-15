@@ -75,13 +75,17 @@
  * the proportional gain is in %/s and the integral one in %/s^2.
  *
  * A change of speed of u closes the drift at a rate proportional to u, so the
- * loop is a plain integrator and the PI controller makes it second order.
- * These keep the ratio between the two terms that gives a damping ratio of
- * 0.89, and set how hard the loop pulls rather than how far it may go: the
- * proportional term alone asks for half a percent at one AOUT_MAX_PTS_DELAY
- * of drift, well inside the bound above. */
-#define AOUT_DRIFT_GAIN                 8.33f
-#define AOUT_DRIFT_INTEGRAL_GAIN        0.208f
+ * loop is a plain integrator and the PI controller makes it second order, with
+ * a natural frequency of sqrt(ki/100) and a damping ratio of kp/(20*sqrt(ki)).
+ * The proportional term alone asks for the whole of the default bound at one
+ * AOUT_MAX_PTS_DELAY of drift - beyond three of those the drift is jumped over
+ * instead - and the integral gain is then what leaves the loop just under
+ * critically damped:
+ * kp = (AOUT_TIMESCALE_MAX - 100) / (AOUT_MAX_PTS_DELAY / CLOCK_FREQ)
+ * ki = kp^2 / (400 * 0.9^2) */
+#define AOUT_DRIFT_GAIN                 83.3f
+#define AOUT_DRIFT_INTEGRAL_GAIN        21.4f
+
 
 
 

@@ -252,8 +252,9 @@ static const char *const ppsz_stereo_mode_texts[] = { N_("Unset"),
 #define AUDIO_DRIFT_GAIN_LONGTEXT N_( \
     "Proportional gain of the drift correction: how much speed is asked for " \
     "per second of measured drift, as a percentage of nominal. The default " \
-    "asks for half a percent at 60 ms of drift. Raising it corrects faster " \
-    "but tracks the noise of the delay reported by the audio device." )
+    "asks for the whole of the \"aout-timescale-max\" bound at 60 ms of " \
+    "drift. Raising it corrects faster but tracks the noise of the delay " \
+    "reported by the audio device." )
 
 #define AUDIO_DRIFT_INTEGRAL_GAIN_TEXT N_( \
     "Drift correction integral gain" )
