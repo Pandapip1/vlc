@@ -270,7 +270,11 @@ static int Demux( demux_t *p_demux )
     {
         bool b_data = Block_Dequeue( p_demux, p_sys->i_time + CHUNK );
 
-        if( p_sys->i_time != VLC_TICK_INVALID )
+        /* Once the data has run out there is nothing left for another step to
+         * cover, and a pcr past the end of the data describes silence that was
+         * never in the file. A repeat resumes the next pass from where this
+         * one reached, so an overshoot here is a hole there. */
+        if( p_sys->i_time != VLC_TICK_INVALID && ( b_data || !p_sys->b_eos ) )
         {
             p_sys->i_time += CHUNK;
             p_sys->b_pcr_sent = true;
