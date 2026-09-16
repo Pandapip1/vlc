@@ -434,8 +434,6 @@ static void SeekPrepare( demux_t *p_demux )
             tk->i_time = VLC_TICK_INVALID;
         }
     }
-
-    es_out_Control( p_demux->out, ES_OUT_RESET_PCR );
 }
 
 /*****************************************************************************
