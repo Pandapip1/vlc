@@ -537,6 +537,11 @@ bool virtual_segment_c::Seek( demux_t & demuxer, vlc_tick_t i_mk_date,
     vlc_tick_t i_mk_time_offset = p_vchapter->i_mk_virtual_start_time - ( ( p_vchapter->p_chapter )? p_vchapter->p_chapter->i_start_time : 0 );
     if (CurrentEdition()->b_ordered)
         p_sys->i_mk_chapter_time = p_vchapter->i_mk_virtual_start_time - p_vchapter->segment.i_mk_start_time - ( ( p_vchapter->p_chapter )? p_vchapter->p_chapter->i_start_time : 0 ) /* + VLC_TICK_0 */;
+    else
+        /* Only an ordered edition splices chapters onto a timeline of its
+         * own. Nothing clears the offset otherwise, so an edition seeked
+         * away from leaves it on every timestamp of the next one. */
+        p_sys->i_mk_chapter_time = 0;
     if ( p_vchapter->p_chapter && p_vchapter->i_seekpoint_num > 0 )
     {
         p_sys->i_updates |= INPUT_UPDATE_TITLE | INPUT_UPDATE_SEEKPOINT;
