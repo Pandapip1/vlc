@@ -130,6 +130,14 @@ static block_t *packetizer_PacketizeBlock( packetizer_t *p_pack, block_t **pp_bl
             block_Release( p_block );
             return NULL;
         }
+
+        /* What is left of this block once an access unit has been taken out
+         * of it comes straight back here, and the break belongs to the seam
+         * the block arrived on, not to the rest of the block: leaving the
+         * flag set resets the parser again for every following access unit,
+         * and each reset arms the outbound flag again, stamping another
+         * picture the decoder then acts on. */
+        p_block->i_flags &= ~BLOCK_FLAG_DISCONTINUITY;
     }
 
     if( p_block )
