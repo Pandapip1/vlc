@@ -424,8 +424,6 @@ static void SeekPrepare( demux_t *p_demux )
             tk->i_time = -1;
         }
     }
-
-    es_out_Control( p_demux->out, ES_OUT_RESET_PCR );
 }
 
 /*****************************************************************************
