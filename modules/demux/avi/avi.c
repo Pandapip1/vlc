@@ -2246,7 +2246,7 @@ static int AVI_TrackSeek( demux_t *p_demux,
 
         if( tk->fmt.i_cat == AUDIO_ES )
         {
-            if( tk->i_blocksize > 0 )
+            if( tk->i_blocksize == 0 )
             {
                 tk->i_blockno = tk->i_idxposc;
             }
