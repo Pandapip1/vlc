@@ -73,6 +73,7 @@ typedef struct
     input_clock_t *p_clock;
 
     vlc_tick_t i_last_pcr;
+    vlc_tick_t i_pcr_step;
 
     vlc_meta_t *p_meta;
 } es_out_pgrm_t;
@@ -173,6 +174,8 @@ struct es_out_sys_t
     /* Used for buffering */
     bool        b_buffering;
     bool        b_repeated; /* the last reposition was a repeat of the item */
+    bool        b_repeat_pending; /* waiting for the first date of the new pass */
+    vlc_tick_t  i_repeat_offset; /* what the demuxer dates are short of the timeline */
     vlc_tick_t  i_buffering_extra_initial;
     vlc_tick_t  i_buffering_extra_stream;
     vlc_tick_t  i_buffering_extra_system;
@@ -205,6 +208,7 @@ static void EsOutChangePosition( es_out_t *out, bool b_flush );
 static void EsOutProgramChangePause( es_out_t *out, bool b_paused, vlc_tick_t i_date );
 static void EsOutProgramsChangeRate( es_out_t *out );
 static void EsOutDecodersStopBuffering( es_out_t *out, bool b_forced );
+static void EsOutRepeatShift( es_out_t *out, es_out_pgrm_t *, vlc_tick_t i_date );
 static void EsOutGlobalMeta( es_out_t *p_out, const vlc_meta_t *p_meta );
 static void EsOutMeta( es_out_t *p_out, const vlc_meta_t *p_meta, const vlc_meta_t *p_progmeta );
 
@@ -340,6 +344,8 @@ es_out_t *input_EsOutNew( input_thread_t *p_input, int i_rate )
 
     p_sys->b_buffering = true;
     p_sys->b_repeated = false;
+    p_sys->b_repeat_pending = false;
+    p_sys->i_repeat_offset = 0;
     p_sys->i_preroll_end = -1;
     p_sys->i_prev_stream_level = -1;
 
@@ -659,7 +665,13 @@ static void EsOutChangePosition( es_out_t *out, bool b_flush )
         {
             input_clock_Reset( p_sys->pgrm[i]->p_clock );
             p_sys->pgrm[i]->i_last_pcr = VLC_TICK_INVALID;
+            p_sys->pgrm[i]->i_pcr_step = 0;
         }
+
+        /* A new reference is taken from whatever the demuxer emits next, so
+         * there is no timeline left to hold on to. */
+        p_sys->b_repeat_pending = false;
+        p_sys->i_repeat_offset = 0;
 
         p_sys->b_buffering = true;
         p_sys->i_buffering_extra_initial = 0;
@@ -671,6 +683,50 @@ static void EsOutChangePosition( es_out_t *out, bool b_flush )
 }
 
 
+
+/*****************************************************************************
+ * EsOutRepeatShift: hold the timeline together across a repeat
+ *****************************************************************************
+ * Repeating an item in place seeks the demuxer back to the start but keeps the
+ * clock reference, the decoders and the audio output, and the dates of the new
+ * pass are converted with that reference. That only works while those dates
+ * carry on from where the last pass stopped.
+ *
+ * A demuxer is free either way: one whose date accumulator is simply left
+ * counting carries the timeline itself, while one that re-derives its date
+ * from the byte position - which is what it must do to answer a seek
+ * correctly - starts over from zero, and the reference would convert that to
+ * system dates that have long gone by.
+ *
+ * So do not depend on it. Measure, on the first date of the new pass, how far
+ * short of the timeline the demuxer has fallen, and carry that difference for
+ * as long as the pass lasts. A demuxer that carried the timeline itself
+ * measures nothing and is left alone.
+ *****************************************************************************/
+static void EsOutRepeatShift( es_out_t *out, es_out_pgrm_t *p_pgrm,
+                              vlc_tick_t i_date )
+{
+    es_out_sys_t *p_sys = out->p_sys;
+
+    p_sys->b_repeat_pending = false;
+
+    if( p_pgrm == NULL || p_pgrm->i_last_pcr <= VLC_TICK_INVALID )
+        return;
+
+    const vlc_tick_t i_timeline = i_date + p_sys->i_repeat_offset;
+    if( i_timeline >= p_pgrm->i_last_pcr )
+        return; /* the demuxer carried the timeline across the seek */
+
+    /* Resume one cadence step past the date the last pass stopped at: that
+     * step is what an accumulator left counting would have added, so the new
+     * pass takes over exactly where the audio already queued for it ends. */
+    p_sys->i_repeat_offset += p_pgrm->i_last_pcr + p_pgrm->i_pcr_step
+                            - i_timeline;
+
+    msg_Dbg( p_sys->p_input, "repeat: the demuxer restarted its timeline, "
+             "carrying it on %"PRId64" ms further",
+             p_sys->i_repeat_offset / 1000 );
+}
 
 static void EsOutDecodersStopBuffering( es_out_t *out, bool b_forced )
 {
@@ -1112,6 +1168,7 @@ static es_out_pgrm_t *EsOutProgramAdd( es_out_t *out, int i_group )
     p_pgrm->b_selected = false;
     p_pgrm->b_scrambled = false;
     p_pgrm->i_last_pcr = VLC_TICK_INVALID;
+    p_pgrm->i_pcr_step = 0;
     p_pgrm->p_meta = NULL;
     p_pgrm->p_clock = input_clock_New( p_sys->i_rate );
     if( !p_pgrm->p_clock )
@@ -2095,6 +2152,25 @@ static int EsOutSend( es_out_t *out, es_out_id_t *es, block_t *p_block )
 
     vlc_mutex_lock( &p_sys->lock );
 
+    /* Put the block on the timeline the clock reference describes; a demuxer
+     * that restarted its dates on the repeat seek is carried on from where the
+     * last pass stopped. The pcr of the new pass has normally settled that
+     * already, but a demuxer is free to send data before its first pcr. */
+    if( unlikely(p_sys->b_repeat_pending) )
+    {
+        const vlc_tick_t i_date = p_block->i_dts > VLC_TICK_INVALID ?
+                                  p_block->i_dts : p_block->i_pts;
+        if( i_date > VLC_TICK_INVALID )
+            EsOutRepeatShift( out, es->p_pgrm, i_date );
+    }
+    if( p_sys->i_repeat_offset != 0 )
+    {
+        if( p_block->i_dts > VLC_TICK_INVALID )
+            p_block->i_dts += p_sys->i_repeat_offset;
+        if( p_block->i_pts > VLC_TICK_INVALID )
+            p_block->i_pts += p_sys->i_repeat_offset;
+    }
+
     /* Drop all ESes except the video one in case of next-frame */
     if( p_sys->p_next_frame_es != NULL && p_sys->p_next_frame_es != es )
     {
@@ -2538,6 +2614,12 @@ static int EsOutControlLocked( es_out_t *out, int i_query, va_list args )
             return VLC_EGENERIC;
         }
 
+        if( unlikely(p_sys->b_repeat_pending) )
+            EsOutRepeatShift( out, p_pgrm, i_pcr );
+        i_pcr += p_sys->i_repeat_offset;
+
+        if( p_pgrm->i_last_pcr > VLC_TICK_INVALID && i_pcr > p_pgrm->i_last_pcr )
+            p_pgrm->i_pcr_step = i_pcr - p_pgrm->i_last_pcr;
         p_pgrm->i_last_pcr = i_pcr;
 
         /* TODO do not use mdate() but proper stream acquisition date */
@@ -2671,7 +2753,7 @@ static int EsOutControlLocked( es_out_t *out, int i_query, va_list args )
         if( i_date < 0 )
             return VLC_EGENERIC;
 
-        p_sys->i_preroll_end = i_date;
+        p_sys->i_preroll_end = i_date + p_sys->i_repeat_offset;
 
         return VLC_SUCCESS;
     }
@@ -2863,6 +2945,7 @@ static int EsOutControlLocked( es_out_t *out, int i_query, va_list args )
          * loop inaudible. */
         EsOutChangePosition( out, false );
         p_sys->b_repeated = true;
+        p_sys->b_repeat_pending = true;
         return VLC_SUCCESS;
 
     case ES_OUT_SET_FRAME_NEXT:
