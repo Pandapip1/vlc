@@ -265,6 +265,7 @@ libvlccore_la_SOURCES = \
 	input/subtitles.c \
 	input/var.c \
 	audio_output/aout_internal.h \
+	audio_output/timeline_step.h \
 	audio_output/common.c \
 	audio_output/dec.c \
 	audio_output/filters.c \

@@ -35,6 +35,7 @@
 #include <vlc_input.h>
 
 #include "aout_internal.h"
+#include "timeline_step.h"
 #include "libvlc.h"
 
 /**
@@ -274,26 +275,6 @@ static void aout_DecSilence (audio_output_t *aout, vlc_tick_t length, vlc_tick_t
     aout_OutputPlay (aout, block);
 }
 
-/**
- * The step between where the last block said its content ended and where this
- * one says it begins, or zero if they join up.
- *
- * A step is a position error introduced upstream - a hole at a loop seam, a
- * dropped frame, a length the demuxer had to guess, a late wakeup - and it
- * says nothing about the device's clock. Genuine drift is what accumulates
- * between blocks that do join up; it never arrives all at once.
- */
-static vlc_tick_t aout_DecTimelineStep (aout_owner_t *owner, vlc_tick_t pts)
-{
-    if (owner->sync.source_end == VLC_TICK_INVALID || owner->sync.discontinuity)
-        return 0;
-
-    const vlc_tick_t step = pts - owner->sync.source_end;
-
-    return (step > +AOUT_MAX_TIMELINE_SLOP || step < -AOUT_MAX_TIMELINE_SLOP)
-           ? step : 0;
-}
-
 static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
                                  int input_rate)
 {
@@ -488,10 +469,12 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
      * timeline joins up, not what the output then did with it. The length is
      * the content's own, so it takes the playback rate to say how long the
      * block occupies of the timeline the dates are on. */
-    const vlc_tick_t step = aout_DecTimelineStep (owner, block->i_pts);
+    const vlc_tick_t step = aout_TimelineStep (owner->sync.source_end,
+                                               block->i_pts,
+                                               owner->sync.discontinuity);
 
-    owner->sync.source_end = block->i_pts
-        + block->i_length * input_rate / INPUT_RATE_DEFAULT;
+    owner->sync.source_end = aout_TimelineEnd (block->i_pts, block->i_length,
+                                               input_rate);
 
     if (unlikely(step != 0))
     {

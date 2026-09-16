@@ -26,6 +26,7 @@ check_PROGRAMS = \
 	test_src_misc_variables \
 	test_src_input_demux_repeat \
 	test_src_input_es_out_repeat \
+	test_src_audio_output_timeline_step \
 	test_src_input_stream \
 	test_src_input_stream_fifo \
 	test_src_interface_dialog \
@@ -122,6 +123,7 @@ test_src_input_demux_repeat_CPPFLAGS = $(AM_CPPFLAGS) \
 	-DTOP_SRCDIR=\"$$(cd "$(top_srcdir)"; pwd)\"
 test_src_input_demux_repeat_LDADD = $(LIBVLCCORE) $(LIBVLC)
 test_src_input_es_out_repeat_SOURCES = src/input/es_out_repeat.c
+test_src_audio_output_timeline_step_SOURCES = src/audio_output/timeline_step.c
 test_src_input_stream_SOURCES = src/input/stream.c
 test_src_input_stream_LDADD = $(LIBVLCCORE) $(LIBVLC)
 test_src_input_stream_net_SOURCES = src/input/stream.c
