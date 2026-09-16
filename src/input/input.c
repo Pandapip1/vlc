@@ -686,8 +686,13 @@ static void MainLoop( input_thread_t *p_input, bool b_interactive )
             }
             else if( !es_out_IsEmpty( input_priv(p_input)->p_es_out ) )
             {
+                /* Not at the idle rate: the end of stream is not signalled
+                 * until this reports empty, and what follows it - a repeat,
+                 * which resumes the item in place - cannot be asked for until
+                 * then, so a tenth of a second of slack here is a tenth of a
+                 * second of silence at every loop. */
                 msg_Dbg( p_input, "waiting decoder fifos to empty" );
-                i_wakeup = vlc_tick_now() + INPUT_IDLE_SLEEP;
+                i_wakeup = vlc_tick_now() + INPUT_IDLE_SLEEP / 20;
             }
             else
             {
