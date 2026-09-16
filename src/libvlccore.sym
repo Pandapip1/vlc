@@ -949,6 +949,7 @@ vlc_player_SetRenderer
 vlc_player_SetStartPaused
 vlc_player_SetPlayAndPause
 vlc_player_SetRepeatCount
+vlc_player_SetRepeatCurrent
 vlc_player_SetSubtitleTextScale
 vlc_player_SetTeletextEnabled
 vlc_player_SetTeletextTransparency

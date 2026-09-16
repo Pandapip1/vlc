@@ -1013,6 +1013,18 @@ input_thread_Events(input_thread_t *input_thread,
                 vlc_player_Pause(player);
                 handled = true;
             }
+            else if (player->repeat_current
+                  && (input->capabilities & VLC_PLAYER_CAP_SEEK))
+            {
+                /* Read from the player rather than latched when the input
+                 * started, so that turning repeat one on or off during a pass
+                 * takes effect at the end of it. Not a count: it goes on until
+                 * the setting changes. An input that cannot seek back is left
+                 * to the playlist, which opens the media again. */
+                handled =
+                    input_ControlPush(input->thread,
+                                      INPUT_CONTROL_RESET_POSITION, NULL) == 0;
+            }
             else if (input->repeat > 0)
             {
                 input->repeat--;

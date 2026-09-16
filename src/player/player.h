@@ -297,6 +297,7 @@ struct vlc_player_t
     vlc_tick_t last_eos;
     unsigned eos_burst_count;
     unsigned repeat;
+    bool repeat_current;
 
     bool deleting;
     struct

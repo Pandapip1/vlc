@@ -174,6 +174,25 @@ VLC_API void
 vlc_player_SetRepeatCount(vlc_player_t *player, unsigned repeat_count);
 
 /**
+ * Repeat the current media in place until told otherwise
+ *
+ * Unlike vlc_player_SetRepeatCount(), this is not a count that is consumed,
+ * and it is read at each end of stream rather than latched when the media
+ * starts, so it can be turned on or off during playback. Repeating in place
+ * keeps the input, and with it the demuxer, the decoders and the audio filter
+ * chain, where opening the same media again as the next one rebuilds them all.
+ *
+ * Note that no per media event is sent for a pass that repeats in place: the
+ * media never stops, so anything keyed on a media starting fires once for the
+ * whole run.
+ *
+ * @param player locked player instance
+ * @param repeat true to seek back to the start at each end of stream
+ */
+VLC_API void
+vlc_player_SetRepeatCurrent(vlc_player_t *player, bool repeat);
+
+/**
  * Enable or disable pause on cork event
  *
  * If enabled, the player will automatically pause and resume on cork events.

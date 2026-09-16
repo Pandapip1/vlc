@@ -435,6 +435,7 @@ vlc_playlist_UpdateNextMedia(vlc_playlist_t *playlist)
     /* the playlist and the player share the lock */
     vlc_playlist_AssertLocked(playlist);
     input_item_t *media = NULL;
+    bool repeat_current = false;
 
     switch (playlist->stopped_action)
     {
@@ -444,6 +445,8 @@ vlc_playlist_UpdateNextMedia(vlc_playlist_t *playlist)
             ssize_t index = vlc_playlist_GetNextMediaIndex(playlist);
             if (index != -1)
                 media = playlist->items.data[index]->media;
+            repeat_current =
+                playlist->repeat == VLC_PLAYLIST_PLAYBACK_REPEAT_CURRENT;
             /* fall through */
         }
         case VLC_PLAYLIST_MEDIA_STOPPED_STOP:
@@ -452,5 +455,11 @@ vlc_playlist_UpdateNextMedia(vlc_playlist_t *playlist)
             vlc_assert_unreachable();
     }
 
+    /* Opening the same media again as the next one rebuilds the input, and
+     * with it the demuxer, the decoders and the audio filter chain, which is
+     * heard as a gap at every loop. Ask the player to seek back instead. The
+     * next media is still set, so an input that cannot seek back keeps being
+     * reopened as before. */
+    vlc_player_SetRepeatCurrent(playlist->player, repeat_current);
     vlc_player_SetNextMedia(playlist->player, media);
 }
