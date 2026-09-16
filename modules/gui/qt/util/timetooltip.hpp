@@ -32,7 +32,12 @@ class TimeTooltip : public QWidget
     Q_OBJECT
 public:
     explicit TimeTooltip( QWidget *parent = 0 );
-    void setTip( const QPoint& pos, const QString& time, const QString& text );
+    /* target and anchor are both in the coordinate space of the widget this
+     * one is a child of: target is the point the bubble points at, anchor the
+     * rectangle of the widget it describes, which the bubble hangs under when
+     * there is no room for it above. */
+    void setTip( const QPoint& target, const QRect& anchor,
+                 const QString& time, const QString& text );
     virtual void show();
 
 protected:
@@ -42,6 +47,7 @@ private:
     void adjustPosition();
     void buildPath();
     QPoint mTarget;
+    QRect mAnchor;
     QString mTime;
     QString mText;
     QString mDisplayedText;
@@ -49,6 +55,7 @@ private:
     QRect mBox;
     QPainterPath mPainterPath;
     int mTipX;
+    bool mTipAbove;
 };
 
 #endif // TIMETOOLTIP_H

@@ -203,7 +203,32 @@ SeekSlider::~SeekSlider()
     delete chapters;
     if ( alternativeStyle )
         delete alternativeStyle;
-    delete mTimeTooltip;
+    /* The window it was handed to may have destroyed it already */
+    delete mTimeTooltip.data();
+}
+
+/**
+ * \brief Move the tooltip into the window we are in
+ *
+ * The bubble is drawn inside that window, above the rest of its contents,
+ * rather than being a window of its own placed at a point on a screen: a
+ * client cannot place a window on wayland, and a screen coordinate is not a
+ * meaningful thing to name on a compositor that does not arrange its surfaces
+ * on one flat plane. We are built before we are put in a window, so the move
+ * waits until there is a window to move into.
+ */
+void SeekSlider::adoptTooltip()
+{
+    QWidget *space = window();
+
+    if( mTimeTooltip.isNull() || space == this ||
+        mTimeTooltip->parentWidget() == space )
+        return;
+
+    const bool b_visible = mTimeTooltip->isVisible();
+    mTimeTooltip->setParent( space );
+    if( b_visible )
+        mTimeTooltip->show();
 }
 
 /***
@@ -231,7 +256,8 @@ void SeekSlider::setPosition( float pos, int64_t time, int length )
     if( pos == -1.0  || ! b_seekable )
     {
         setEnabled( false );
-        mTimeTooltip->hide();
+        if( !mTimeTooltip.isNull() )
+            mTimeTooltip->hide();
         isSliding = false;
         setValue( 0 );
         return;
@@ -390,7 +416,7 @@ void SeekSlider::mouseMoveEvent( QMouseEvent *event )
     }
 
     /* Tooltip */
-    if ( inputLength > 0 )
+    if ( inputLength > 0 && !mTimeTooltip.isNull() )
     {
         int margin = handleLength();
         int posX = qMax( rect().left() + margin, qMin( rect().right() - margin, event->x() ) );
@@ -413,16 +439,20 @@ void SeekSlider::mouseMoveEvent( QMouseEvent *event )
             }
         }
 
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-        const auto pos = event->globalPosition();
-#else
-        const auto pos = event->globalPos();
-#endif
-        QPoint target( pos.x() - ( event->x() - posX ),
-                QWidget::mapToGlobal( QPoint( 0, 0 ) ).y() );
+        /* The bubble is a child of the window we are in and is placed in that
+         * window's coordinates, so hand it the point to point at and the room
+         * we take up in the same space. Nothing here needs to know where on a
+         * screen, or on how many screens, any of it ends up. */
+        adoptTooltip();
+        QWidget *space = mTimeTooltip->parentWidget();
+        if( space == NULL )
+            space = this;
+        const QPoint target = mapTo( space, QPoint( posX, 0 ) );
+        const QRect anchor( mapTo( space, QPoint( 0, 0 ) ), size() );
+
         if( likely( size().width() > handleLength() ) ) {
             secstotimestr( psz_length, getValuePercentageFromXPos( event->x() ) * inputLength );
-            mTimeTooltip->setTip( target, psz_length, chapterLabel );
+            mTimeTooltip->setTip( target, anchor, psz_length, chapterLabel );
         }
     }
     event->accept();
@@ -455,7 +485,10 @@ void SeekSlider::enterEvent( QEvent * )
     }
     /* Don't show the tooltip if the slider is disabled or a menu is open */
     if( isEnabled() && inputLength > 0 && !qApp->activePopupWidget() )
+    {
+        adoptTooltip();
         mTimeTooltip->show();
+    }
 }
 
 void SeekSlider::leaveEvent( QEvent * )
@@ -465,6 +498,9 @@ void SeekSlider::leaveEvent( QEvent * )
        - if the mouse leave the slider rect (Note: it can still be
          over the tooltip!)
        - if another window is on the way of the cursor */
+    if( mTimeTooltip.isNull() )
+        return;
+
     if( !rect().contains( mapFromGlobal( QCursor::pos() ) ) ||
       ( !isActiveWindow() && !mTimeTooltip->isActiveWindow() ) )
     {
@@ -502,7 +538,9 @@ void SeekSlider::paintEvent( QPaintEvent *ev )
 
 void SeekSlider::hideEvent( QHideEvent * )
 {
-    mTimeTooltip->hide();
+    /* The window we handed the bubble to may be taking us both down */
+    if( !mTimeTooltip.isNull() )
+        mTimeTooltip->hide();
 }
 
 bool SeekSlider::eventFilter( QObject *obj, QEvent *event )

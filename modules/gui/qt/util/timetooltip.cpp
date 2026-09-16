@@ -23,33 +23,35 @@
 
 #include <QApplication>
 #include <QPainter>
-#include <QBitmap>
 #include <QFontMetrics>
-#if QT_VERSION < QT_VERSION_CHECK(5, 10, 0)
-#include <QDesktopWidget>
-#else
-#include <QScreen>
-#include <QGuiApplication>
-#endif
+#include <QRegion>
 
 #define TIP_HEIGHT 5
 
 TimeTooltip::TimeTooltip( QWidget *parent ) :
     QWidget( parent )
 {
-    setWindowFlags( Qt::ToolTip                 |
-                    Qt::WindowStaysOnTopHint    |
-                    Qt::FramelessWindowHint     );
+    /* The bubble belongs to the window that owns the slider and is drawn
+     * inside it, in its coordinates. A client has no business naming a
+     * point on the screen: it cannot place a window there on wayland, and on
+     * a compositor that does not lay its surfaces out on one flat plane -
+     * a headset, a rotated or scaled output, a tiling compositor - a screen
+     * coordinate does not describe anywhere in particular. The window we are
+     * part of is a space we do own. */
 
-    // Tell Qt that it doesn't need to erase the background before
-    // a paintEvent occurs. This should save some CPU cycles.
-    setAttribute( Qt::WA_OpaquePaintEvent );
-    setAttribute( Qt::WA_TranslucentBackground );
+    /* A surface of our own, so that we stack above an embedded video, which
+     * has one and would otherwise cover us. It is also what makes us a
+     * subsurface on wayland, which the client positions relative to its
+     * parent - the one placement wayland does allow. The bubble's shape comes
+     * from a mask rather than from a translucent background, which needs a
+     * compositor and leaves nothing on the screen without one. */
+    setAttribute( Qt::WA_NativeWindow );
     setAttribute( Qt::WA_TransparentForMouseEvents );
 
     // Inherit from the system default font size -5
     mFont = QFont( "Verdana", qMax( qApp->font().pointSize() - 5, 7 ) );
     mTipX = -1;
+    mTipAbove = true;
 
     // By default the widget is unintialized and should not be displayed
     resize( 0, 0 );
@@ -80,42 +82,34 @@ void TimeTooltip::adjustPosition()
         mTarget.y() - size.height() - TIP_HEIGHT / 2 );
 #endif
 
-    // Keep the tooltip on the same screen if possible
-#if QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
-    QRect screen{};
-    auto *screenAt = QGuiApplication::screenAt( mTarget );
-    if (screenAt != nullptr)
-        screen = screenAt->geometry();
-#else
-    QRect screen = QApplication::desktop()->screenGeometry( mTarget );
-#endif
-    position.setX( qMax( screen.left(), qMin( position.x(),
-        screen.left() + screen.width() - size.width() ) ) );
-    position.setY( qMax( screen.top(), qMin( position.y(),
-        screen.top() + screen.height() - size.height() ) ) );
-
-    /* A wayland popup is placed by its positioner when it is mapped and cannot
-     * be moved afterwards - Qt 5.15 does not implement xdg_popup.reposition -
-     * so a plain move on a visible tip updates what Qt believes its geometry
-     * to be and nothing on screen. Take it down and put it back up at the new
-     * place. The remap flickers, so it is only for the platform that needs it;
-     * everywhere else a move is honoured as it stands. */
-    static const bool b_remap =
-        QGuiApplication::platformName().startsWith( QLatin1String( "wayland" ) );
-
-    if( b_remap && isVisible() && pos() != position )
+    /* Keep the bubble inside the window it is drawn in. If the slider sits so
+     * close to the top of that window that the bubble does not fit above it,
+     * hang it under the slider instead rather than let it be clipped away. */
+    bool above = true;
+    const QWidget *parent = parentWidget();
+    if( parent != NULL )
     {
-        hide();
-        move( position );
-        show();
+        position.setX( qBound( 0, position.x(),
+                               qMax( 0, parent->width() - size.width() ) ) );
+        if( position.y() < 0 )
+        {
+            above = false;
+            position.setY( qBound( 0, mAnchor.bottom() + TIP_HEIGHT / 2,
+                                   qMax( 0, parent->height() - size.height() ) ) );
+        }
     }
-    else
-        move( position );
+
+    move( position );
+
+    /* The tip hangs off whichever edge of the box faces the slider, so the
+     * box makes room for it above itself when the bubble points upwards */
+    QRect box = textbox.translated( 0, above ? 0 : TIP_HEIGHT );
 
     int tipX = mTarget.x() - position.x();
-    if( mBox != textbox || mTipX != tipX )
+    if( mBox != box || mTipX != tipX || mTipAbove != above )
     {
-        mBox = textbox;
+        mTipAbove = above;
+        mBox = box;
         mTipX = tipX;
 
         resize( size );
@@ -132,26 +126,36 @@ void TimeTooltip::buildPath()
     mPainterPath = QPainterPath();
     mPainterPath.addRect( mBox );
 
-    // Draw the tip
+    // Draw the tip, on the side of the box the slider is on
+    const int base = mTipAbove ? mBox.bottom() + 1 : mBox.top();
+    const int apex = mTipAbove ? base + TIP_HEIGHT : base - TIP_HEIGHT;
     QPolygonF polygon;
-    polygon << QPoint( qMax( 0, mTipX - 3 ), mBox.height() )
-            << QPoint( mTipX, mBox.height() + TIP_HEIGHT )
-            << QPoint( qMin( mTipX + 3, mBox.width() ), mBox.height() );
+    polygon << QPoint( qMax( 0, mTipX - 3 ), base )
+            << QPoint( mTipX, apex )
+            << QPoint( qMin( mTipX + 3, mBox.width() ), base );
     mPainterPath.addPolygon( polygon );
 
     // Store the simplified version of the path
     mPainterPath = mPainterPath.simplified();
+
+    /* We are a child widget now, so everything we do not draw shows whatever
+     * is behind us in our own window. Cut the widget down to the bubble so
+     * that the corners either side of the tip are not ours to spoil. */
+    setMask( QRegion( mPainterPath.toFillPolygon().toPolygon() ) );
 }
 
-void TimeTooltip::setTip( const QPoint& target, const QString& time, const QString& text )
+void TimeTooltip::setTip( const QPoint& target, const QRect& anchor,
+                          const QString& time, const QString& text )
 {
     mDisplayedText = time;
     if ( !text.isEmpty() )
         mDisplayedText.append( " - " ).append( text );
 
-    if( mTarget != target || time.length() != mTime.length() || mText != text )
+    if( mTarget != target || mAnchor != anchor ||
+        time.length() != mTime.length() || mText != text )
     {
         mTarget = target;
+        mAnchor = anchor;
         mTime = time;
         mText = text;
         adjustPosition();

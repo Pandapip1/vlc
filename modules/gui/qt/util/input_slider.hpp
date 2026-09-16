@@ -35,6 +35,7 @@
 
 #include <QSlider>
 #include <QPainter>
+#include <QPointer>
 #include <QTime>
 
 #define MSTRTIME_MAX_SIZE 22
@@ -79,6 +80,7 @@ protected:
 
     QSize sizeHint() const Q_DECL_OVERRIDE;
 
+    void adoptTooltip();
     void processReleasedButton();
     qreal handleOpacity() const;
     qreal loading() const;
@@ -96,7 +98,7 @@ private:
     int inputLength;                           /* InputLength that can change */
     char psz_length[MSTRTIME_MAX_SIZE];               /* Used for the ToolTip */
     QTimer *seekLimitTimer;
-    TimeTooltip *mTimeTooltip;
+    QPointer<TimeTooltip> mTimeTooltip;
     float f_buffering;
     QTime bufferingStart;
     SeekPoints* chapters;
