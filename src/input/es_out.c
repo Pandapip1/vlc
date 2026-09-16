@@ -238,6 +238,7 @@ typedef struct
     bool        b_draining;
 
     /* Repeat in place */
+    bool        b_repeated; /* the last reposition was a repeat of the item */
     bool        b_repeat_pending; /* waiting for the first date of the new pass */
     vlc_tick_t  i_repeat_offset; /* what the demuxer dates are short of the timeline */
 
@@ -1138,6 +1139,7 @@ static void EsOutChangePosition(es_out_sys_t *p_sys,
 
         /* A new reference is taken from whatever the demuxer emits next, so
          * there is no timeline left to hold on to. */
+        p_sys->b_repeated = false;
         p_sys->b_repeat_pending = false;
         p_sys->i_repeat_offset = 0;
 
@@ -3837,6 +3839,24 @@ static int EsOutVaControlLocked(es_out_sys_t *p_sys, input_source_t *source,
             /* don't change the current jitter */
             i_new_jitter = p_sys->i_pts_jitter;
         }
+        else if( p_sys->b_repeated )
+        {
+            /* The first pcr of a repeated pass reads late because the demuxer
+             * had to seek to produce it, not because playback is behind.
+             * Rebuffering would throw away the audio kept to cover the loop,
+             * as ES_OUT_RESET_PCR concedes. Take the jitter instead, until a
+             * pcr arrives on time again. */
+            msg_Dbg(p_sys->p_input,
+                    "ES_OUT_SET_(GROUP_)PCR  is %d ms late after a repeat "
+                    "(pts_delay increased to %d ms)",
+                    (int)MS_FROM_VLC_TICK(i_late),
+                    (int)MS_FROM_VLC_TICK(i_clock_total_delay));
+
+            EsOutPrivControlLocked(p_sys, source, ES_OUT_PRIV_SET_JITTER,
+                                   p_sys->i_pts_delay, i_new_jitter,
+                                   p_sys->i_cr_average);
+            return VLC_SUCCESS;
+        }
         else
         {
             msg_Err(p_sys->p_input,
@@ -4361,6 +4381,7 @@ static int EsOutVaPrivControlLocked(es_out_sys_t *p_sys, input_source_t *source,
          * inaudible. */
         EsOutStopNextFrame(p_sys);
         EsOutChangePosition(p_sys, NULL, false);
+        p_sys->b_repeated = true;
         p_sys->b_repeat_pending = true;
         return VLC_SUCCESS;
     }
@@ -4504,6 +4525,7 @@ input_EsOutNew(input_thread_t *p_input, input_source_t *main_source, float rate,
                                      = p_sys->i_buffering_extra_system
                                      = VLC_TICK_INVALID;
     p_sys->b_draining = false;
+    p_sys->b_repeated = false;
     p_sys->b_repeat_pending = false;
     p_sys->i_repeat_offset = 0;
     p_sys->p_sout_record = NULL;
