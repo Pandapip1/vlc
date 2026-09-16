@@ -31,6 +31,7 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_aout.h>
+#include <vlc_atomic.h>
 #include <vlc_cpu.h>
 #include <vlc_fs.h>
 
@@ -72,7 +73,18 @@ static void Close( vlc_object_t * p_this );
 #define DRIFT_LONGTEXT N_( \
     "Run the device clock this many parts per million away from the system " \
     "clock, positive for fast. No real device is exactly nominal, and this " \
-    "is what the output's drift correction exists to answer." )
+    "is what the output's drift correction exists to answer. Settable while " \
+    "the stream runs, so that an error can be put there and then taken away " \
+    "again; what has already been heard is not rewritten." )
+
+#define SETTLE_TEXT N_("Take the clock error away after (ms)")
+#define SETTLE_LONGTEXT N_( \
+    "Once this much audio has gone through, put the clock error back to " \
+    "nothing, as a device warming up to its final rate does. The drift " \
+    "correction working its way out to its bound is only half of what there " \
+    "is to see; whether it comes back off it is the other half. Measured in " \
+    "audio rather than in elapsed time, so that it lands in the same place " \
+    "every run. Zero leaves the error where it was set." )
 
 #define CHANNELS_TEXT N_("Channels")
 #define CHANNELS_LONGTEXT N_( \
@@ -97,6 +109,8 @@ vlc_module_begin ()
     add_integer( "adummy-seed", 1, SEED_TEXT, SEED_LONGTEXT, true )
     add_integer( "adummy-drift", 0, DRIFT_TEXT, DRIFT_LONGTEXT, true )
         change_integer_range( -100000, 100000 )
+    add_integer( "adummy-drift-after", 0, SETTLE_TEXT, SETTLE_LONGTEXT, true )
+        change_integer_range( 0, 3600000 )
     add_integer( "adummy-channels", 0, CHANNELS_TEXT, CHANNELS_LONGTEXT, true )
         change_integer_range( 0, 8 )
     add_bool( "adummy-virtual", false, VIRTUAL_TEXT, VIRTUAL_LONGTEXT, true )
@@ -109,14 +123,17 @@ struct aout_sys_t
 {
     vlc_tick_t i_latency; /* what the device claims to hold */
     vlc_tick_t i_jitter;  /* how coarsely its position can be read */
-    int64_t    i_drift;   /* ppm its clock is away from the system's */
+    atomic_int_least64_t drift; /* ppm its clock is away from the system's */
+    int64_t    i_ppm;     /* the last of those the position was moved on at */
+    vlc_tick_t i_settle;  /* how much audio it holds that error over, 0 for all */
     uint64_t   i_seed;    /* what the jitter is drawn from */
     uint64_t   i_rng;     /* how far along that a real-time run has got */
     uint16_t   i_chans;   /* layout it insists on, 0 for any */
     bool       b_virtual; /* is the position the data's or the clock's */
     FILE      *trace;     /* where its side of the conversation goes */
 
-    vlc_tick_t i_start;   /* when the stream began draining */
+    vlc_tick_t i_start;   /* when the position was last moved on */
+    vlc_tick_t i_drained; /* how much it had got through by then */
     vlc_tick_t i_origin;  /* pts the first sample handed over was due at */
     vlc_tick_t i_played;  /* how far past that the device has got */
     uint64_t   i_written; /* samples handed over since the last flush */
@@ -206,6 +223,38 @@ static void Trace( struct aout_sys_t *sys, const char *event,
             Trace( sys, event, __VA_ARGS__ ); \
     } while( 0 )
 
+/**
+ * How much the device has got through, at the error in force over each
+ * stretch rather than at the one now set: changing it must move the position
+ * on from where it stands, not rewrite what has already been heard.
+ */
+static vlc_tick_t Drained( struct aout_sys_t *sys, vlc_tick_t now )
+{
+    const int64_t i_ppm = atomic_load( &sys->drift );
+    vlc_tick_t d = now - sys->i_start;
+
+    if( unlikely(i_ppm != sys->i_ppm) )
+    {
+        sys->i_drained += d + d * sys->i_ppm / 1000000;
+        sys->i_start = now;
+        sys->i_ppm = i_ppm;
+        d = 0;
+    }
+
+    return sys->i_drained + d + d * i_ppm / 1000000;
+}
+
+static int DriftChanged( vlc_object_t *obj, const char *var,
+                         vlc_value_t old, vlc_value_t cur, void *data )
+{
+    struct aout_sys_t *sys = data;
+
+    atomic_store( &sys->drift, cur.i_int );
+
+    (void) obj; (void) var; (void) old;
+    return VLC_SUCCESS;
+}
+
 static void Report( audio_output_t *aout )
 {
     struct aout_sys_t *sys = aout->sys;
@@ -234,11 +283,21 @@ static void Play(audio_output_t *aout, block_t *block)
             const vlc_tick_t i_len =
                 (vlc_tick_t)block->i_nb_samples * CLOCK_FREQ / sys->i_rate;
 
-            sys->i_played += i_len - i_len * sys->i_drift / 1000000;
+            sys->i_played += i_len
+                             - i_len * atomic_load( &sys->drift ) / 1000000;
         }
 
         sys->i_written += block->i_nb_samples;
         sys->i_total += block->i_nb_samples;
+
+        if( unlikely(sys->i_settle != 0) && sys->i_rate != 0
+         && (vlc_tick_t)( sys->i_total * CLOCK_FREQ / sys->i_rate )
+            >= sys->i_settle )
+        {
+            TRACE( sys, "settle", 0, NULL, NULL, NULL, sys->i_settle );
+            sys->i_settle = 0;
+            var_SetInteger( aout, "adummy-drift", 0 );
+        }
 
         const vlc_tick_t i_at = block->i_pts - sys->i_origin;
 
@@ -261,6 +320,8 @@ static void Flush(audio_output_t *aout, bool wait)
             TRACE( sys, "flush", 0, NULL, NULL, NULL, 0 );
 
         sys->i_start = VLC_TICK_INVALID;
+        sys->i_drained = 0;
+        sys->i_ppm = atomic_load( &sys->drift );
         sys->i_origin = VLC_TICK_INVALID;
         sys->i_played = 0;
         sys->i_written = 0;
@@ -297,10 +358,7 @@ static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
     const vlc_tick_t i_handed =
         (vlc_tick_t)( sys->i_written * CLOCK_FREQ / sys->i_rate );
 
-    vlc_tick_t i_drained = mdate() - sys->i_start;
-    i_drained += i_drained * sys->i_drift / 1000000;
-
-    vlc_tick_t i_queued = i_handed - i_drained;
+    vlc_tick_t i_queued = i_handed - Drained( sys, mdate() );
 
     if( i_queued < 0 )
     {
@@ -375,6 +433,8 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
     if( sys != NULL )
     {
         sys->i_start = VLC_TICK_INVALID;
+        sys->i_drained = 0;
+        sys->i_ppm = atomic_load( &sys->drift );
         sys->i_origin = VLC_TICK_INVALID;
         sys->i_played = 0;
         sys->i_written = 0;
@@ -441,6 +501,8 @@ static int Open(vlc_object_t *obj)
     const vlc_tick_t i_jitter =
         VLC_TICK_FROM_MS( var_InheritInteger( obj, "adummy-jitter" ) );
     const int64_t i_drift = var_InheritInteger( obj, "adummy-drift" );
+    const vlc_tick_t i_settle =
+        VLC_TICK_FROM_MS( var_InheritInteger( obj, "adummy-drift-after" ) );
     const bool b_virtual = var_InheritBool( obj, "adummy-virtual" );
     char *psz_trace = var_InheritString( obj, "adummy-trace" );
     const uint16_t i_chans =
@@ -453,7 +515,7 @@ static int Open(vlc_object_t *obj)
 
     /* Asked for none of it, it answers nothing, as it always has. */
     if( i_latency > 0 || i_jitter > 0 || i_drift != 0 || i_chans != 0
-     || b_virtual || psz_trace != NULL )
+     || b_virtual || i_settle > 0 || psz_trace != NULL )
     {
         struct aout_sys_t *sys = malloc( sizeof (*sys) );
         if( unlikely(sys == NULL) )
@@ -464,12 +526,15 @@ static int Open(vlc_object_t *obj)
 
         sys->i_latency = i_latency;
         sys->i_jitter = i_jitter;
-        sys->i_drift = i_drift;
+        atomic_init( &sys->drift, i_drift );
+        sys->i_ppm = i_drift;
+        sys->i_settle = i_settle;
         sys->i_chans = i_chans;
         sys->b_virtual = b_virtual;
         sys->i_seed = (uint64_t)var_InheritInteger( obj, "adummy-seed" );
         sys->i_rng = 0;
         sys->i_start = VLC_TICK_INVALID;
+        sys->i_drained = 0;
         sys->i_origin = VLC_TICK_INVALID;
         sys->i_played = 0;
         sys->i_written = 0;
@@ -490,9 +555,10 @@ static int Open(vlc_object_t *obj)
             {
                 fprintf( sys->trace, "# vlc-adummy-trace 1\n" );
                 fprintf( sys->trace, "# virtual=%d latency_us=%"PRId64" "
-                         "jitter_us=%"PRId64" drift_ppm=%"PRId64" seed=%"PRIu64
+                         "jitter_us=%"PRId64" drift_ppm=%"PRId64" "
+                         "drift_after_us=%"PRId64" seed=%"PRIu64
                          " channels=0x%04x\n", b_virtual ? 1 : 0, i_latency,
-                         i_jitter, i_drift, sys->i_seed, i_chans );
+                         i_jitter, i_drift, i_settle, sys->i_seed, i_chans );
                 fprintf( sys->trace,
                          "event,samples,total,pts_us,jitter_us,answer_us,"
                          "extra_us\n" );
@@ -505,7 +571,8 @@ static int Open(vlc_object_t *obj)
         /* Without any of the timing set there is nothing to report that the
          * caller does not already know, and a device that answers is not the
          * same case as one that does not. */
-        if( i_latency > 0 || i_jitter > 0 || i_drift != 0 || b_virtual )
+        if( i_latency > 0 || i_jitter > 0 || i_drift != 0 || b_virtual
+         || i_settle > 0 )
         {
             aout->time_get = TimeGet;
             aout->latency_get = LatencyGet;
@@ -514,6 +581,9 @@ static int Open(vlc_object_t *obj)
         var_Create( aout, "adummy-runouts", VLC_VAR_INTEGER );
         var_Create( aout, "adummy-shortfall", VLC_VAR_INTEGER );
         var_Create( aout, "adummy-written", VLC_VAR_INTEGER );
+
+        var_Create( aout, "adummy-drift", VLC_VAR_INTEGER | VLC_VAR_DOINHERIT );
+        var_AddCallback( aout, "adummy-drift", DriftChanged, sys );
     }
     free( psz_trace );
 
@@ -531,7 +601,12 @@ static void Close(vlc_object_t *obj)
     audio_output_t *aout = (audio_output_t *)obj;
     struct aout_sys_t *sys = aout->sys;
 
-    if( sys != NULL && sys->trace != NULL )
+    if( sys == NULL )
+        return;
+
+    var_DelCallback( aout, "adummy-drift", DriftChanged, sys );
+
+    if( sys->trace != NULL )
         fclose( sys->trace );
 
     free( sys );
