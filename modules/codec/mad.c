@@ -66,6 +66,7 @@ struct decoder_sys_t
     struct mad_synth  mad_synth;
 
     int               i_reject_count;
+    bool              b_broke;
     block_t          *p_last_buf;
 };
 
@@ -133,27 +134,41 @@ static block_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
                 p_in_buf->p_buffer, MAD_BUFFER_GUARD);
     }
 
+    if( p_last_buf->i_flags & BLOCK_FLAG_DISCONTINUITY )
+    {
+        /* Layer III carries part of a frame in the one before it, and what
+         * the bit reservoir holds across a break belongs to the stream that
+         * was playing before it. Empty it rather than count frames off: a
+         * frame that arrived with all of its own data - which is what the
+         * first frame of a file is - costs nothing at all then, and one that
+         * really is short is refused below by the only thing that can tell.
+         * Layers I and II keep every frame whole and never read it. */
+        p_sys->mad_stream.md_len = 0;
+        p_sys->b_broke = true;
+    }
+
     mad_stream_buffer( &p_sys->mad_stream, p_last_buf->p_buffer,
                        p_last_buf->i_buffer );
     /* Do the actual decoding now (ignore EOF error when draining). */
     if ( mad_frame_decode( &p_sys->mad_frame, &p_sys->mad_stream ) == -1
      && ( pp_block != NULL || p_sys->mad_stream.error != MAD_ERROR_BUFLEN ) )
     {
-        msg_Err( p_dec, "libmad error: %s",
-                  mad_stream_errorstr( &p_sys->mad_stream ) );
-        if( !MAD_RECOVERABLE( p_sys->mad_stream.error ) )
-            p_sys->i_reject_count = 3;
+        /* A frame left wanting the reservoir a break took away is the cost of
+         * the break, not a fault in the stream: say so quietly, and only until
+         * one frame has carried its own data and refilled it. */
+        if( p_sys->b_broke && p_sys->mad_stream.error == MAD_ERROR_BADDATAPTR )
+            msg_Dbg( p_dec, "frame short of the bit reservoir the break took" );
+        else
+            msg_Err( p_dec, "libmad error: %s",
+                     mad_stream_errorstr( &p_sys->mad_stream ) );
+        /* Nothing came of this frame, so what the synthesis holds is still
+         * the one before it and putting it out would play that twice. A
+         * frame libmad can pick up from again costs itself and no more. */
+        p_sys->i_reject_count =
+            MAD_RECOVERABLE( p_sys->mad_stream.error ) ? 1 : 3;
     }
-    else if( ( p_last_buf->i_flags & BLOCK_FLAG_DISCONTINUITY ) &&
-             p_sys->mad_frame.header.layer == MAD_LAYER_III )
-    {
-        /* Layer III carries part of a frame in the one before it, so the
-         * first frames after a break decode against a reservoir that was
-         * never filled and come out wrong. Layers I and II keep every frame
-         * whole, and the packetizer only ever hands over whole frames, so
-         * there is nothing there for a break to have spoiled. */
-        p_sys->i_reject_count = 3;
-    }
+    else
+        p_sys->b_broke = false;
 
     if( p_sys->i_reject_count > 0 )
         goto reject;
@@ -265,6 +280,7 @@ static int Open( vlc_object_t *p_this )
     if( p_sys == NULL )
         return VLC_ENOMEM;
     p_sys->i_reject_count = 0;
+    p_sys->b_broke = false;
     p_sys->p_last_buf = NULL;
 
     /* Initialize libmad */
