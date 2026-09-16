@@ -144,8 +144,14 @@ static block_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
         if( !MAD_RECOVERABLE( p_sys->mad_stream.error ) )
             p_sys->i_reject_count = 3;
     }
-    else if( p_last_buf->i_flags & BLOCK_FLAG_DISCONTINUITY )
+    else if( ( p_last_buf->i_flags & BLOCK_FLAG_DISCONTINUITY ) &&
+             p_sys->mad_frame.header.layer == MAD_LAYER_III )
     {
+        /* Layer III carries part of a frame in the one before it, so the
+         * first frames after a break decode against a reservoir that was
+         * never filled and come out wrong. Layers I and II keep every frame
+         * whole, and the packetizer only ever hands over whole frames, so
+         * there is nothing there for a break to have spoiled. */
         p_sys->i_reject_count = 3;
     }
 
