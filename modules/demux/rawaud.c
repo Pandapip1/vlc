@@ -237,12 +237,20 @@ static int Demux( demux_t *p_demux )
     if( p_block == NULL )
         return VLC_DEMUXER_EOF;
 
-    p_block->i_dts = p_block->i_pts = date_Get( &p_sys->pts );
+    /* The last read is short of a whole frame whenever the file does not
+     * divide by it. Count what came back, and say how far it reaches: a
+     * reader left to work that out from the frame before it puts the end of
+     * the stream up to a frame late. */
+    unsigned i_samples = p_block->i_buffer * p_sys->i_frame_samples
+                       / p_sys->i_frame_size;
+    const vlc_tick_t i_date = date_Get( &p_sys->pts );
+
+    p_block->i_dts = p_block->i_pts = i_date;
+    p_block->i_nb_samples = i_samples;
+    p_block->i_length = date_Increment( &p_sys->pts, i_samples ) - i_date;
 
     es_out_SetPCR( p_demux->out, p_block->i_pts );
     es_out_Send( p_demux->out, p_sys->p_es, p_block );
-
-    date_Increment( &p_sys->pts, p_sys->i_frame_samples );
 
     return VLC_DEMUXER_SUCCESS;
 }
