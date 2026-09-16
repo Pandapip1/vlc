@@ -58,6 +58,18 @@ struct demux_sys_t
 
     es_out_id_t *p_es;
 
+    /* The last pcr handed to the output, which is what the stream has got to,
+     * plus where the last seek put that point on the timeline. */
+    vlc_tick_t i_pcr;
+    vlc_tick_t i_time_offset;
+    /* Bytes and time handed over, from which the bitrate the length and the
+     * seek landing point are taken. Only the run before the first seek counts:
+     * afterwards the two would be measured from an offset derived from the
+     * estimate itself. */
+    uint64_t i_bytes;
+    int64_t  i_bitrate_avg;
+    bool     b_seeked;
+
     decoder_t *p_packetizer;
 };
 
@@ -118,6 +130,11 @@ static int Open( vlc_object_t * p_this )
     p_demux->p_sys     = p_sys = malloc( sizeof( demux_sys_t ) );
     p_sys->b_start     = true;
     p_sys->p_es        = NULL;
+    p_sys->i_pcr       = VLC_TICK_INVALID;
+    p_sys->i_time_offset = 0;
+    p_sys->i_bytes     = 0;
+    p_sys->i_bitrate_avg = 0;
+    p_sys->b_seeked    = false;
 
     /* Load the mpegvideo packetizer */
     es_format_Init( &fmt, VIDEO_ES, VLC_CODEC_MPGV );
@@ -171,6 +188,15 @@ static int Demux( demux_t *p_demux )
             block_t *p_next = p_block_out->p_next;
 
             es_out_SetPCR( p_demux->out, p_block_out->i_dts );
+            p_sys->i_pcr = p_block_out->i_dts;
+            p_sys->i_bytes += p_block_out->i_buffer;
+
+            /* What has gone out over how long it lasts is the bitrate, which
+             * is the only thing a stream with no timestamps of its own has to
+             * answer for its length with, or to date a seek from. */
+            if( !p_sys->b_seeked && p_sys->i_pcr > VLC_TICK_0 )
+                p_sys->i_bitrate_avg = INT64_C(8000000) * p_sys->i_bytes /
+                                       ( p_sys->i_pcr - VLC_TICK_0 );
 
             p_block_out->p_next = NULL;
             es_out_Send( p_demux->out, p_sys->p_es, p_block_out );
@@ -184,15 +210,76 @@ static int Demux( demux_t *p_demux )
 /*****************************************************************************
  * Control:
  *****************************************************************************/
+/*****************************************************************************
+ * PostSeekReset: put the parser and the timeline where the stream now is
+ *****************************************************************************
+ * A seek leaves the packetizer holding bytes that no longer join onto what
+ * comes next, and a date that no longer says anything about where the stream
+ * has landed. Empty it and give it the start of a stream again, so that the
+ * first picture after the seek is dated from the position sought to.
+ *****************************************************************************/
+static void PostSeekReset( demux_t *p_demux, vlc_tick_t i_time )
+{
+    demux_sys_t *p_sys = p_demux->p_sys;
+
+    if( p_sys->p_packetizer->pf_flush )
+        p_sys->p_packetizer->pf_flush( p_sys->p_packetizer );
+    else
+    {
+        block_t *p_block_out;
+        while( ( p_block_out = p_sys->p_packetizer->pf_packetize(
+                                   p_sys->p_packetizer, NULL ) ) )
+            block_ChainRelease( p_block_out );
+    }
+
+    p_sys->b_start = true;
+    p_sys->i_pcr = VLC_TICK_INVALID;
+    p_sys->i_time_offset = i_time;
+    p_sys->b_seeked = true;
+}
+
 static int Control( demux_t *p_demux, int i_query, va_list args )
 {
-    /* demux_sys_t *p_sys  = p_demux->p_sys; */
-    /* FIXME calculate the bitrate */
-    if( i_query == DEMUX_SET_TIME )
-        return VLC_EGENERIC;
-    else
-        return demux_vaControlHelper( p_demux->s,
-                                       0, -1,
-                                       0, 1, i_query, args );
+    demux_sys_t *p_sys = p_demux->p_sys;
+
+    switch( i_query )
+    {
+        case DEMUX_GET_TIME:
+            /* The helper would answer from the byte position, which is not
+             * where the output has got to. Answer with the pcr just published
+             * and where the last seek pinned it. */
+            if( p_sys->i_pcr == VLC_TICK_INVALID )
+                return VLC_EGENERIC;
+            *va_arg( args, int64_t * ) = p_sys->i_time_offset + p_sys->i_pcr;
+            return VLC_SUCCESS;
+
+        case DEMUX_SET_TIME:
+        case DEMUX_SET_POSITION:
+        {
+            /* Both are byte seeks through the helper, and only the bitrate
+             * says where in the bytes a time is. Without one a time seek
+             * cannot be answered at all; a position seek still can. */
+            if( i_query == DEMUX_SET_TIME && p_sys->i_bitrate_avg <= 0 )
+                return VLC_EGENERIC;
+
+            int i_ret = demux_vaControlHelper( p_demux->s, 0, -1,
+                                               p_sys->i_bitrate_avg, 1,
+                                               i_query, args );
+            if( i_ret == VLC_SUCCESS )
+            {
+                vlc_tick_t i_time = 0;
+                if( p_sys->i_bitrate_avg > 0 )
+                    i_time = INT64_C(8000000) * vlc_stream_Tell( p_demux->s ) /
+                             p_sys->i_bitrate_avg;
+                PostSeekReset( p_demux, i_time );
+            }
+            return i_ret;
+        }
+
+        default:
+            return demux_vaControlHelper( p_demux->s, 0, -1,
+                                          p_sys->i_bitrate_avg, 1,
+                                          i_query, args );
+    }
 }
 
