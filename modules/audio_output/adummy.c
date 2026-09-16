@@ -25,10 +25,14 @@
 # include "config.h"
 #endif
 
+#include <errno.h>
+#include <stdio.h>
+
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_aout.h>
 #include <vlc_cpu.h>
+#include <vlc_fs.h>
 
 static int Open( vlc_object_t * p_this );
 static void Close( vlc_object_t * p_this );
@@ -48,6 +52,13 @@ static void Close( vlc_object_t * p_this );
     "Seed for the jitter. The same seed and the same audio draw the same " \
     "numbers: the reading taken once a given amount has been handed over is " \
     "always the same one." )
+
+#define TRACE_TEXT N_("Write the device's side down to this file")
+#define TRACE_LONGTEXT N_( \
+    "One CSV row per block handed over and per reading taken: what came in, " \
+    "and what was answered. Against a virtual device the file is a function " \
+    "of the stream and the options, so two runs of the same thing produce " \
+    "the same bytes and a diff is a test. Unset, nothing is written." )
 
 #define VIRTUAL_TEXT N_("Advance on the data, not the clock")
 #define VIRTUAL_LONGTEXT N_( \
@@ -89,6 +100,7 @@ vlc_module_begin ()
     add_integer( "adummy-channels", 0, CHANNELS_TEXT, CHANNELS_LONGTEXT, true )
         change_integer_range( 0, 8 )
     add_bool( "adummy-virtual", false, VIRTUAL_TEXT, VIRTUAL_LONGTEXT, true )
+    add_string( "adummy-trace", NULL, TRACE_TEXT, TRACE_LONGTEXT, true )
 vlc_module_end ()
 
 #define A52_FRAME_NB 1536
@@ -102,6 +114,7 @@ struct aout_sys_t
     uint64_t   i_rng;     /* how far along that a real-time run has got */
     uint16_t   i_chans;   /* layout it insists on, 0 for any */
     bool       b_virtual; /* is the position the data's or the clock's */
+    FILE      *trace;     /* where its side of the conversation goes */
 
     vlc_tick_t i_start;   /* when the stream began draining */
     vlc_tick_t i_origin;  /* pts the first sample handed over was due at */
@@ -141,6 +154,58 @@ static vlc_tick_t Jitter( struct aout_sys_t *sys )
     return (vlc_tick_t)( x % i_span ) - sys->i_jitter;
 }
 
+/**
+ * One row. Whatever the row has nothing to say about is left empty rather
+ * than written as a zero, so a reading of none reads differently from no
+ * reading. Dates are given from the first sample handed over rather than as
+ * they stand, because as they stand they are on the system clock. "answer" is
+ * when the next sample will be heard: from that same first date against a
+ * virtual device and from the system clock against a real one, which is the
+ * whole difference between the two.
+ */
+static void Trace( struct aout_sys_t *sys, const char *event,
+                   unsigned i_samples, const vlc_tick_t *pts,
+                   const vlc_tick_t *jitter, const vlc_tick_t *answer,
+                   int64_t i_extra )
+{
+    FILE *f = sys->trace;
+
+    fprintf( f, "%s,", event );
+
+    if( i_samples != 0 )
+        fprintf( f, "%u,", i_samples );
+    else
+        fprintf( f, "," );
+
+    fprintf( f, "%"PRIu64",", sys->i_total );
+
+    if( pts != NULL )
+        fprintf( f, "%"PRId64",", *pts );
+    else
+        fprintf( f, "," );
+
+    if( jitter != NULL )
+        fprintf( f, "%"PRId64",", *jitter );
+    else
+        fprintf( f, "," );
+
+    if( answer != NULL )
+        fprintf( f, "%"PRId64",", *answer );
+    else
+        fprintf( f, "," );
+
+    if( i_extra != 0 )
+        fprintf( f, "%"PRId64"\n", i_extra );
+    else
+        fprintf( f, "\n" );
+}
+
+#define TRACE( sys, event, ... ) \
+    do { \
+        if( (sys)->trace != NULL ) \
+            Trace( sys, event, __VA_ARGS__ ); \
+    } while( 0 )
+
 static void Report( audio_output_t *aout )
 {
     struct aout_sys_t *sys = aout->sys;
@@ -174,6 +239,10 @@ static void Play(audio_output_t *aout, block_t *block)
 
         sys->i_written += block->i_nb_samples;
         sys->i_total += block->i_nb_samples;
+
+        const vlc_tick_t i_at = block->i_pts - sys->i_origin;
+
+        TRACE( sys, "play", block->i_nb_samples, &i_at, NULL, NULL, 0 );
     }
 
     block_Release( block );
@@ -185,6 +254,12 @@ static void Flush(audio_output_t *aout, bool wait)
 
     if( sys != NULL )
     {
+        /* Only one that throws something away, and not whether it was asked
+         * to wait: a device holding nothing does the same thing either way,
+         * and a row for it would say what the caller did, not what it did. */
+        if( sys->i_written != 0 )
+            TRACE( sys, "flush", 0, NULL, NULL, NULL, 0 );
+
         sys->i_start = VLC_TICK_INVALID;
         sys->i_origin = VLC_TICK_INVALID;
         sys->i_played = 0;
@@ -210,8 +285,12 @@ static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
         /* When the next sample will be heard, said as a delay because that is
          * the unit asked for: the caller adds the clock straight back on, and
          * what it is left holding came from the data alone. */
-        *delay = sys->i_origin + sys->i_played + sys->i_latency
-                 + Jitter( sys ) - mdate();
+        const vlc_tick_t i_jitter = Jitter( sys );
+        const vlc_tick_t i_answer = sys->i_played + sys->i_latency + i_jitter;
+
+        TRACE( sys, "time", 0, NULL, &i_jitter, &i_answer, 0 );
+
+        *delay = sys->i_origin + i_answer - mdate();
         return 0;
     }
 
@@ -233,6 +312,7 @@ static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
             sys->i_runouts++;
             msg_Dbg( aout, "ran out of data by %"PRId64" us", -i_queued );
             aout_TraceEvent( aout, "runout", -i_queued );
+            TRACE( sys, "runout", 0, NULL, NULL, NULL, -i_queued );
         }
         if( -i_queued > sys->i_shortfall )
             sys->i_shortfall = -i_queued;
@@ -243,7 +323,10 @@ static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
     else
         sys->b_dry = false;
 
-    *delay = i_queued + sys->i_latency + Jitter( sys );
+    const vlc_tick_t i_jitter = Jitter( sys );
+
+    *delay = i_queued + sys->i_latency + i_jitter;
+    TRACE( sys, "time", 0, NULL, &i_jitter, delay, 0 );
     return 0;
 }
 
@@ -301,6 +384,14 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
         sys->i_runouts = 0;
         sys->i_shortfall = 0;
         Report( aout );
+
+        if( sys->trace != NULL )
+        {
+            fprintf( sys->trace, "# rate=%u channels=%u format=%4.4s\n",
+                     fmt->i_rate, aout_FormatNbChannels( fmt ),
+                     (const char *)&fmt->i_format );
+            Trace( sys, "start", 0, NULL, NULL, NULL, 0 );
+        }
     }
 
     return VLC_SUCCESS;
@@ -315,7 +406,12 @@ static void Stop(audio_output_t *aout)
              "worst shortfall %"PRId64" us",
              sys->i_total, sys->i_runouts, sys->i_shortfall );
 
+    TRACE( sys, "stop", 0, NULL, NULL, NULL, sys->i_runouts );
+
     Flush( aout, false );
+
+    if( sys->trace != NULL )
+        fflush( sys->trace );
 }
 
 /* One channel more than asked for would be remixed the same way, so the
@@ -346,6 +442,7 @@ static int Open(vlc_object_t *obj)
         VLC_TICK_FROM_MS( var_InheritInteger( obj, "adummy-jitter" ) );
     const int64_t i_drift = var_InheritInteger( obj, "adummy-drift" );
     const bool b_virtual = var_InheritBool( obj, "adummy-virtual" );
+    char *psz_trace = var_InheritString( obj, "adummy-trace" );
     const uint16_t i_chans =
         ChansForCount( var_InheritInteger( obj, "adummy-channels" ) );
 
@@ -356,11 +453,14 @@ static int Open(vlc_object_t *obj)
 
     /* Asked for none of it, it answers nothing, as it always has. */
     if( i_latency > 0 || i_jitter > 0 || i_drift != 0 || i_chans != 0
-     || b_virtual )
+     || b_virtual || psz_trace != NULL )
     {
         struct aout_sys_t *sys = malloc( sizeof (*sys) );
         if( unlikely(sys == NULL) )
+        {
+            free( psz_trace );
             return VLC_ENOMEM;
+        }
 
         sys->i_latency = i_latency;
         sys->i_jitter = i_jitter;
@@ -378,6 +478,26 @@ static int Open(vlc_object_t *obj)
         sys->i_total = 0;
         sys->i_runouts = 0;
         sys->i_shortfall = 0;
+        sys->trace = NULL;
+
+        if( psz_trace != NULL )
+        {
+            sys->trace = vlc_fopen( psz_trace, "we" );
+            if( sys->trace == NULL )
+                msg_Err( aout, "cannot write the trace to %s: %s", psz_trace,
+                         vlc_strerror_c( errno ) );
+            else
+            {
+                fprintf( sys->trace, "# vlc-adummy-trace 1\n" );
+                fprintf( sys->trace, "# virtual=%d latency_us=%"PRId64" "
+                         "jitter_us=%"PRId64" drift_ppm=%"PRId64" seed=%"PRIu64
+                         " channels=0x%04x\n", b_virtual ? 1 : 0, i_latency,
+                         i_jitter, i_drift, sys->i_seed, i_chans );
+                fprintf( sys->trace,
+                         "event,samples,total,pts_us,jitter_us,answer_us,"
+                         "extra_us\n" );
+            }
+        }
 
         aout->sys = sys;
         aout->stop = Stop;
@@ -395,6 +515,7 @@ static int Open(vlc_object_t *obj)
         var_Create( aout, "adummy-shortfall", VLC_VAR_INTEGER );
         var_Create( aout, "adummy-written", VLC_VAR_INTEGER );
     }
+    free( psz_trace );
 
     aout->start = Start;
     aout->play = Play;
@@ -408,6 +529,10 @@ static int Open(vlc_object_t *obj)
 static void Close(vlc_object_t *obj)
 {
     audio_output_t *aout = (audio_output_t *)obj;
+    struct aout_sys_t *sys = aout->sys;
 
-    free( aout->sys );
+    if( sys != NULL && sys->trace != NULL )
+        fclose( sys->trace );
+
+    free( sys );
 }
