@@ -71,6 +71,7 @@ struct demux_sys_t
     uint32_t *pi_seektable;
     uint32_t i_datalength;
     int      i_framelength;
+    unsigned i_rate;
 
     /* */
     vlc_meta_t     *p_meta;
@@ -130,6 +131,7 @@ static int Open( vlc_object_t * p_this )
     }
 
     p_sys->i_datalength = GetDWLE( &p_header[14] );
+    p_sys->i_rate = fmt.audio.i_rate;
     p_sys->i_framelength = TTA_FRAMETIME * fmt.audio.i_rate;
 
     p_sys->i_totalframes = p_sys->i_datalength / p_sys->i_framelength +
@@ -211,6 +213,20 @@ static int Demux( demux_t *p_demux )
                                p_sys->pi_seektable[p_sys->i_currentframe] );
     if( p_data == NULL ) return 0;
     p_data->i_dts = p_data->i_pts = VLC_TICK_0 + (int64_t)(INT64_C(1000000) * p_sys->i_currentframe) * TTA_FRAMETIME;
+
+    /* The last frame holds whatever is left of the declared sample count,
+     * which is less than a whole frame unless the two divide. Say so: the
+     * length is how far the data reaches, and a caller that has to know where
+     * the stream really ends - repeating it in place, for one - has nothing
+     * else to go on. */
+    uint64_t i_played = (uint64_t)p_sys->i_currentframe * p_sys->i_framelength;
+    unsigned i_samples = p_sys->i_framelength;
+
+    if( i_played + i_samples > p_sys->i_datalength )
+        i_samples = p_sys->i_datalength - i_played;
+
+    p_data->i_nb_samples = i_samples;
+    p_data->i_length = CLOCK_FREQ * i_samples / p_sys->i_rate;
 
     p_sys->i_currentframe++;
 
