@@ -76,6 +76,11 @@ struct ts_pmt_t
     vlc_tick_t i_last_dts;
     uint64_t i_last_dts_byte;
 
+    /* extent of what has actually been handed over */
+    vlc_tick_t i_first_sent_dts; /* kept across a seek: the stream's own start */
+    vlc_tick_t i_last_sent_dts;
+    vlc_tick_t i_last_sent_pcr;
+
     /* ARIB specific */
     struct
     {

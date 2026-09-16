@@ -196,6 +196,7 @@ static block_t * ProcessTSPacket( demux_t *p_demux, ts_pid_t *pid, block_t *p_pk
 static bool GatherSectionsData( demux_t *p_demux, ts_pid_t *, block_t *, size_t );
 static bool GatherPESData( demux_t *p_demux, ts_pid_t *, block_t *, size_t );
 static void ProgramSetPCR( demux_t *p_demux, ts_pmt_t *p_prg, vlc_tick_t i_pcr );
+static void SetEndPCR( demux_t *p_demux );
 
 static block_t* ReadTSPacket( demux_t *p_demux );
 static int SeekToTime( demux_t *p_demux, const ts_pmt_t *, vlc_tick_t time );
@@ -643,6 +644,7 @@ static int Demux( demux_t *p_demux )
         block_t     *p_pkt;
         if( !(p_pkt = ReadTSPacket( p_demux )) )
         {
+            SetEndPCR( p_demux );
             return VLC_DEMUXER_EOF;
         }
 
@@ -1435,6 +1437,21 @@ static void SendDataChain( demux_t *p_demux, ts_es_t *p_es, block_t *p_chain )
         p_block->p_next = NULL;
 
         ts_es_t *p_es_send = p_es;
+
+        if( p_es->fmt.i_cat == AUDIO_ES || p_es->fmt.i_cat == VIDEO_ES )
+        {
+            const vlc_tick_t i_dts = (p_block->i_dts > VLC_TICK_INVALID)
+                                   ? p_block->i_dts : p_block->i_pts;
+            ts_pmt_t *p_pmt = p_es->p_program;
+            if( i_dts > VLC_TICK_INVALID && p_pmt )
+            {
+                if( p_pmt->i_first_sent_dts <= VLC_TICK_INVALID )
+                    p_pmt->i_first_sent_dts = i_dts;
+                if( i_dts > p_pmt->i_last_sent_dts )
+                    p_pmt->i_last_sent_dts = i_dts;
+            }
+        }
+
         if( p_es_send->i_next_block_flags )
         {
             p_block->i_flags |= p_es_send->i_next_block_flags;
@@ -1920,6 +1937,8 @@ static void ReadyQueuesPostSeek( demux_t *p_demux )
             FlushESBuffer( pid->u.p_stream );
         }
         p_pmt->pcr.i_current = VLC_TICK_INVALID;
+        p_pmt->i_last_sent_dts = VLC_TICK_INVALID;
+        p_pmt->i_last_sent_pcr = VLC_TICK_INVALID;
     }
 }
 
@@ -2238,7 +2257,22 @@ static void ProgramSetPCR( demux_t *p_demux, ts_pmt_t *p_pmt, vlc_tick_t i_pcr )
 
     if ( p_sys->i_pmt_es )
     {
-        es_out_Control( p_demux->out, ES_OUT_SET_GROUP_PCR, p_pmt->i_number, i_pcr );
+        /* A pcr says when the data reaches the decoder, not when it is heard,
+         * and a mux puts the whole of its buffering model between the two -
+         * 700 ms at both ends of a transport stream ffmpeg wrote. Described
+         * that way a pass begins before its own first frame and ends before
+         * its own last one, so a repeat, placing the next pass where this one
+         * stopped, starts it on ground the last pass has already covered and
+         * the clock reads late for the rest of the pass. Keep the pcr for
+         * pacing and seeking, but never tell the clock it is somewhere the
+         * data has not reached. */
+        vlc_tick_t i_es_pcr = i_pcr;
+        if( p_pmt->i_first_sent_dts > VLC_TICK_INVALID &&
+            i_es_pcr < p_pmt->i_first_sent_dts )
+            i_es_pcr = p_pmt->i_first_sent_dts;
+        p_pmt->i_last_sent_pcr = i_es_pcr;
+
+        es_out_Control( p_demux->out, ES_OUT_SET_GROUP_PCR, p_pmt->i_number, i_es_pcr );
         /* growing files/named fifo handling */
         if( p_sys->b_access_control == false &&
             vlc_stream_Tell( p_sys->stream ) > p_pmt->i_last_dts_byte )
@@ -2251,6 +2285,22 @@ static void ProgramSetPCR( demux_t *p_demux, ts_pmt_t *p_pmt, vlc_tick_t i_pcr )
                 p_pmt->i_last_dts_byte = vlc_stream_Tell( p_sys->stream );
             }
         }
+    }
+}
+
+static void SetEndPCR( demux_t *p_demux )
+{
+    demux_sys_t *p_sys = p_demux->p_sys;
+
+    if( unlikely(GetPID(p_sys, 0)->type != TYPE_PAT) )
+        return;
+
+    ts_pat_t *p_pat = GetPID(p_sys, 0)->u.p_pat;
+    for( int i = 0; i < p_pat->programs.i_size; i++ )
+    {
+        ts_pmt_t *p_pmt = p_pat->programs.p_elems[i]->u.p_pmt;
+        if( p_pmt->i_last_sent_dts > p_pmt->i_last_sent_pcr )
+            ProgramSetPCR( p_demux, p_pmt, p_pmt->i_last_sent_dts );
     }
 }
 
