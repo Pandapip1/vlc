@@ -1098,6 +1098,24 @@ static void Ogg_UpdatePCR( demux_t *p_demux, logical_stream_t *p_stream,
     demux_sys_t *p_ogg = p_demux->p_sys;
     p_stream->i_end_length = 0;
 
+#ifdef HAVE_LIBVORBIS
+    /* A vorbis packet lasts its own window lapped against the one before it,
+     * so the chain has to advance on every audio packet whatever its granule:
+     * libogg gives the page's granule to the last packet it completes and -1
+     * to the rest, and that page-final packet still has to leave its blocksize
+     * behind for the first packet of the next page. */
+    long i_blocksize = 0, i_prev_blocksize = 0;
+    if( p_stream->fmt.i_codec == VLC_CODEC_VORBIS &&
+        p_stream->special.vorbis.p_info && VORBIS_HEADERS_VALID(p_stream) )
+    {
+        i_blocksize = vorbis_packet_blocksize( p_stream->special.vorbis.p_info,
+                                               p_oggpacket );
+        i_prev_blocksize = p_stream->special.vorbis.i_prev_blocksize;
+        if( i_blocksize > 0 )
+            p_stream->special.vorbis.i_prev_blocksize = i_blocksize;
+    }
+#endif
+
     /* Convert the granulepos into a pcr */
     if ( p_oggpacket->granulepos == 0 )
     {
@@ -1175,19 +1193,12 @@ static void Ogg_UpdatePCR( demux_t *p_demux, logical_stream_t *p_stream,
             }
         }
 #ifdef HAVE_LIBVORBIS
-        else if ( p_stream->fmt.i_codec == VLC_CODEC_VORBIS &&
-                  p_stream->special.vorbis.p_info &&
-                  VORBIS_HEADERS_VALID(p_stream) &&
-                  p_stream->i_previous_granulepos > 0 )
+        else if ( i_blocksize > 0 && p_stream->i_previous_granulepos > 0 )
         {
-            long i_blocksize = vorbis_packet_blocksize(
-                        p_stream->special.vorbis.p_info, p_oggpacket );
-            if ( p_stream->special.vorbis.i_prev_blocksize )
-                i_duration = ( i_blocksize + p_stream->special.vorbis.i_prev_blocksize ) / 4;
-            else
-                i_duration = i_blocksize / 2;
-            p_stream->special.vorbis.i_prev_blocksize = i_blocksize;
             /* duration in samples per channel */
+            i_duration = ( i_prev_blocksize > 0 )
+                       ? ( i_blocksize + i_prev_blocksize ) / 4
+                       : i_blocksize / 2;
             p_oggpacket->granulepos = p_stream->i_previous_granulepos + i_duration;
             p_stream->i_pcr = p_stream->i_previous_granulepos *
                               CLOCK_FREQ / p_stream->special.vorbis.p_info->rate;
