@@ -735,14 +735,21 @@ static void EsOutRepeatShift( es_out_t *out, es_out_pgrm_t *p_pgrm,
      * output playing silence across the difference.
      *
      * The data the demuxer has already handed over says where the pass really
-     * ended, so take that when it is nearer. Never take it further out than
-     * the cadence: a demuxer whose dates run ahead of its pcr would otherwise
-     * push the next pass past a hole rather than close one, and never nearer
-     * than the pcr itself, which is ground already covered. */
+     * ended, so take that, and the cadence only when there is none to take.
+     * Never nearer than the pcr itself, which is ground already covered.
+     *
+     * It is not bounded above by the cadence. A container that carries its
+     * timestamps in cluster or packet headers emits the pcr before the blocks
+     * it covers have all been handed over, so an end further out than one
+     * cadence step past it is ordinary rather than the mark of a demuxer
+     * running ahead: matroska ends 48 ms past a pcr it steps 23 ms at a time,
+     * and the bound cost it 25 ms of its own content at every loop. A demuxer
+     * whose pcr genuinely outruns its data is held back where that belongs,
+     * in the demuxer. */
     const vlc_tick_t i_cadence = p_pgrm->i_last_pcr + p_pgrm->i_pcr_step;
     vlc_tick_t i_resume = p_pgrm->i_last_end;
 
-    if( i_resume <= VLC_TICK_INVALID || i_resume > i_cadence )
+    if( i_resume <= VLC_TICK_INVALID )
         i_resume = i_cadence;
     if( i_resume < p_pgrm->i_last_pcr )
         i_resume = p_pgrm->i_last_pcr;
