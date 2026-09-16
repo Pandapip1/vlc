@@ -1617,8 +1617,11 @@ static int Demux_UnSeekable( demux_t *p_demux )
                               vlc_stream_Tell(p_demux->s) );
                     if( AVI_PacketSearch( p_demux ) )
                     {
-                        msg_Err( p_demux, "resync failed" );
-                        return VLC_DEMUXER_EGENERIC;
+                        /* The only way the search fails is running out of
+                         * stream looking for the next header, so this is the
+                         * end of the file rather than a fault. */
+                        msg_Warn( p_demux, "resync failed, end of stream" );
+                        return VLC_DEMUXER_EOF;
                     }
             }
         }
@@ -1633,6 +1636,10 @@ static int Demux_UnSeekable( demux_t *p_demux )
                 block_t *p_frame = ReadFrame( p_demux, p_stream, 8, avi_pk.i_size ) ;
                 if( p_frame == NULL )
                 {
+                    /* A chunk the header promised but the stream does not
+                     * hold is a truncated file, not a broken one. */
+                    if( vlc_stream_Eof( p_demux->s ) )
+                        return VLC_DEMUXER_EOF;
                     return VLC_DEMUXER_EGENERIC;
                 }
                 p_frame->i_pts = VLC_TICK_0 + AVI_GetPTS( p_stream );
