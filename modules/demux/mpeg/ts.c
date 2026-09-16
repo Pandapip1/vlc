@@ -1875,6 +1875,21 @@ static void ReadyQueuesPostSeek( demux_t *p_demux )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
 
+    /* The counters carry on from wherever the stream was left, and a seek
+     * lands on a packet that has nothing to do with the one before it. Every
+     * pid would then report the jump it was itself asked for as a break in
+     * the stream, and each break costs the packetizer the frame it is holding
+     * and the decoder its start. Forget them instead, so the first packet
+     * after the seek is taken for what it is: the first one seen on that pid. */
+    ts_pid_next_context_t ctx = ts_pid_NextContextInitValue;
+    for( ts_pid_t *pid = ts_pid_Next( &p_sys->pids, &ctx );
+         pid; pid = ts_pid_Next( &p_sys->pids, &ctx ) )
+    {
+        pid->i_cc = 0xff;
+        pid->i_dup = 0;
+        memset( pid->prevpktbytes, 0, PREVPKTKEEPBYTES );
+    }
+
     ts_pat_t *p_pat = GetPID(p_sys, 0)->u.p_pat;
     for( int i=0; i< p_pat->programs.i_size; i++ )
     {
