@@ -60,6 +60,7 @@ struct demux_sys_t
     es_format_t     fmt;
     es_out_id_t     *p_es;
 
+    int64_t         i_data_offset;
     int64_t         i_block_start;
     int64_t         i_block_end;
     vlc_tick_t      i_block_date;
@@ -119,6 +120,7 @@ static int Open( vlc_object_t * p_this )
 
     p_sys->i_silence_countdown = p_sys->i_block_start = p_sys->i_block_end =
     p_sys->i_loop_count = 0;
+    p_sys->i_data_offset = i_data_offset;
     p_sys->p_es = NULL;
 
     date_Init( &p_sys->pts, 1, 1 );
@@ -563,12 +565,38 @@ static void ResyncDate( demux_t *p_demux )
               + INT64_C(8000000) * i_ofs / p_sys->fmt.i_bitrate );
 }
 
+/* Puts the demuxer back on the first block. The chain of block headers is the
+ * only thing that says what the stream holds, so the start is the one offset
+ * that can be reached without having read what comes before it. */
+static int RewindToStart( demux_t *p_demux )
+{
+    demux_sys_t *p_sys = p_demux->p_sys;
+
+    if( vlc_stream_Seek( p_demux->s, p_sys->i_data_offset ) )
+        return VLC_EGENERIC;
+
+    p_sys->i_block_start = p_sys->i_block_end = 0;
+    p_sys->i_silence_countdown = 0;
+    p_sys->i_loop_count = 0;
+    date_Set( &p_sys->pts, VLC_TICK_0 );
+    p_sys->i_block_date = date_Get( &p_sys->pts );
+    return VLC_SUCCESS;
+}
+
 static int Control( demux_t *p_demux, int i_query, va_list args )
 {
     demux_sys_t *p_sys  = p_demux->p_sys;
 
     switch( i_query )
     {
+        case DEMUX_CAN_SEEK:
+            /* The block bounds are only known once a block header has been read,
+             * and the first one is read by the first Demux(). Answering from
+             * them says "not seekable" for the whole life of the demuxer, since
+             * the input asks once, at open time. What the stream can do is what
+             * decides, and the start can always be reached. */
+            return vlc_stream_vaControl( p_demux->s, i_query, args );
+
         case DEMUX_GET_TIME:
             /* The helper derives the time from the offset within the current
              * block, so it restarts from zero at every block header and does
@@ -583,6 +611,11 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         {
             int64_t i_time = va_arg( args, int64_t );
             int64_t i_ofs;
+
+            /* The whole stream can be rewound even though no byte inside it
+             * can be reached directly. */
+            if( i_time <= VLC_TICK_0 )
+                return RewindToStart( p_demux );
 
             /* Only the current block maps back to a byte offset: the size of
              * a block is unknown until its header has been read. Clamp to it
@@ -615,6 +648,20 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         }
 
         case DEMUX_SET_POSITION:
+        {
+            va_list ap;
+            double f;
+
+            va_copy( ap, args );
+            f = va_arg( ap, double );
+            va_end( ap );
+
+            /* The bounds below are the current block, so 0 would be the start
+             * of wherever the demuxer happens to be. The start of the stream is
+             * what is being asked for. */
+            if( f <= 0. )
+                return RewindToStart( p_demux );
+
             /* The helper stays within the bounds it is given, so the offset
              * it leaves the stream at is always inside the current block. */
             if( demux_vaControlHelper( p_demux->s, p_sys->i_block_start,
@@ -626,6 +673,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 
             ResyncDate( p_demux );
             return VLC_SUCCESS;
+        }
     }
 
     return demux_vaControlHelper( p_demux->s, p_sys->i_block_start,
