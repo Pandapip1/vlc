@@ -1274,16 +1274,21 @@ static int bluray_esOutSend(es_out_t *p_out, es_out_id_t *p_es, block_t *p_block
 
     bluray_esOutDeleteNonReusedESUnlocked(p_out);
 
-    es_pair_t *p_pair = getEsPairByES(&esout_sys->es, p_es);
-    if(p_pair && p_pair->i_next_block_flags)
-    {
-        p_block->i_flags |= p_pair->i_next_block_flags;
-        p_pair->i_next_block_flags = 0;
-    }
     if(esout_sys->b_disable_output)
     {
+        /* The flags wait for a block that is actually going to be sent: a
+         * block dropped here carries nothing and must not spend them. */
         block_Release(p_block);
         p_block = NULL;
+    }
+    else
+    {
+        es_pair_t *p_pair = getEsPairByES(&esout_sys->es, p_es);
+        if(p_pair && p_pair->i_next_block_flags)
+        {
+            p_block->i_flags |= p_pair->i_next_block_flags;
+            p_pair->i_next_block_flags = 0;
+        }
     }
     vlc_mutex_unlock(&esout_sys->lock);
     return (p_block) ? es_out_Send(esout_sys->p_dst_out, p_es, p_block) : VLC_SUCCESS;
