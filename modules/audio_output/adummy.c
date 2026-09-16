@@ -45,10 +45,17 @@ static void Close( vlc_object_t * p_this );
 
 #define SEED_TEXT N_("Jitter seed")
 #define SEED_LONGTEXT N_( \
-    "Seed for the jitter sequence. The same seed draws the same numbers in " \
-    "the same order, which takes one source of variation out of a " \
-    "comparison. It does not make a run repeat: which reading gets which of " \
-    "those numbers still depends on when the decoder asks for it." )
+    "Seed for the jitter. The same seed and the same audio draw the same " \
+    "numbers: the reading taken once a given amount has been handed over is " \
+    "always the same one." )
+
+#define VIRTUAL_TEXT N_("Advance on the data, not the clock")
+#define VIRTUAL_LONGTEXT N_( \
+    "Move the device position only as audio is handed over, rather than as " \
+    "the system clock runs. What is reported is then a function of what was " \
+    "played and of these options alone, so two runs of the same stream " \
+    "answer identically however loaded the machine is. Nothing can starve " \
+    "such a device, so it never reports running out." )
 
 #define DRIFT_TEXT N_("Clock error (ppm)")
 #define DRIFT_LONGTEXT N_( \
@@ -81,6 +88,7 @@ vlc_module_begin ()
         change_integer_range( -100000, 100000 )
     add_integer( "adummy-channels", 0, CHANNELS_TEXT, CHANNELS_LONGTEXT, true )
         change_integer_range( 0, 8 )
+    add_bool( "adummy-virtual", false, VIRTUAL_TEXT, VIRTUAL_LONGTEXT, true )
 vlc_module_end ()
 
 #define A52_FRAME_NB 1536
@@ -90,10 +98,14 @@ struct aout_sys_t
     vlc_tick_t i_latency; /* what the device claims to hold */
     vlc_tick_t i_jitter;  /* how coarsely its position can be read */
     int64_t    i_drift;   /* ppm its clock is away from the system's */
-    uint64_t   i_rng;     /* jitter sequence, from the seed */
+    uint64_t   i_seed;    /* what the jitter is drawn from */
+    uint64_t   i_rng;     /* how far along that a real-time run has got */
     uint16_t   i_chans;   /* layout it insists on, 0 for any */
+    bool       b_virtual; /* is the position the data's or the clock's */
 
     vlc_tick_t i_start;   /* when the stream began draining */
+    vlc_tick_t i_origin;  /* pts the first sample handed over was due at */
+    vlc_tick_t i_played;  /* how far past that the device has got */
     uint64_t   i_written; /* samples handed over since the last flush */
     uint64_t   i_total;   /* samples handed over since the stream started */
     unsigned   i_rate;
@@ -105,25 +117,28 @@ struct aout_sys_t
     vlc_tick_t i_shortfall; /* the worst of those, as a duration */
 };
 
-/* xorshift64*: the numbers depend on nothing but the seed. */
-static uint64_t NextRandom( struct aout_sys_t *sys )
+/* splitmix64. A counter rather than a chain, so that a draw can be asked for
+ * by where it belongs in the stream and not only by what came before it. */
+static uint64_t Mix( uint64_t x )
 {
-    uint64_t x = sys->i_rng;
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    sys->i_rng = x;
-    return x * UINT64_C(2685821657736338717);
+    x = ( x ^ ( x >> 30 ) ) * UINT64_C(0xBF58476D1CE4E5B9);
+    x = ( x ^ ( x >> 27 ) ) * UINT64_C(0x94D049BB133111EB);
+    return x ^ ( x >> 31 );
 }
 
-/* Uniform over [-i_jitter, +i_jitter]. */
-static vlc_tick_t NextJitter( struct aout_sys_t *sys )
+/* Uniform over [-i_jitter, +i_jitter], drawn at the sample count when the
+ * position is the data's, so the same audio draws the same number however
+ * many times the decoder happened to ask, and in sequence otherwise. */
+static vlc_tick_t Jitter( struct aout_sys_t *sys )
 {
     if( sys->i_jitter == 0 )
         return 0;
 
+    const uint64_t i_at = sys->b_virtual ? sys->i_total : ++sys->i_rng;
     const uint64_t i_span = (uint64_t)sys->i_jitter * 2 + 1;
-    return (vlc_tick_t)( NextRandom( sys ) % i_span ) - sys->i_jitter;
+    const uint64_t x = Mix( sys->i_seed + i_at * UINT64_C(0x9E3779B97F4A7C15) );
+
+    return (vlc_tick_t)( x % i_span ) - sys->i_jitter;
 }
 
 static void Report( audio_output_t *aout )
@@ -142,7 +157,21 @@ static void Play(audio_output_t *aout, block_t *block)
     if( sys != NULL )
     {
         if( sys->i_start == VLC_TICK_INVALID )
+        {
             sys->i_start = mdate();
+            sys->i_origin = block->i_pts;
+        }
+
+        /* The whole of a virtual device's motion is here: it gets through
+         * what it is handed, on its own clock and on nothing else. */
+        if( sys->b_virtual && sys->i_rate != 0 )
+        {
+            const vlc_tick_t i_len =
+                (vlc_tick_t)block->i_nb_samples * CLOCK_FREQ / sys->i_rate;
+
+            sys->i_played += i_len - i_len * sys->i_drift / 1000000;
+        }
+
         sys->i_written += block->i_nb_samples;
         sys->i_total += block->i_nb_samples;
     }
@@ -157,6 +186,8 @@ static void Flush(audio_output_t *aout, bool wait)
     if( sys != NULL )
     {
         sys->i_start = VLC_TICK_INVALID;
+        sys->i_origin = VLC_TICK_INVALID;
+        sys->i_played = 0;
         sys->i_written = 0;
         sys->b_dry = false;
     }
@@ -173,6 +204,16 @@ static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
 
     if( sys->i_start == VLC_TICK_INVALID || sys->i_rate == 0 )
         return -1; /* nothing has been handed over yet */
+
+    if( sys->b_virtual )
+    {
+        /* When the next sample will be heard, said as a delay because that is
+         * the unit asked for: the caller adds the clock straight back on, and
+         * what it is left holding came from the data alone. */
+        *delay = sys->i_origin + sys->i_played + sys->i_latency
+                 + Jitter( sys ) - mdate();
+        return 0;
+    }
 
     const vlc_tick_t i_handed =
         (vlc_tick_t)( sys->i_written * CLOCK_FREQ / sys->i_rate );
@@ -202,7 +243,7 @@ static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
     else
         sys->b_dry = false;
 
-    *delay = i_queued + sys->i_latency + NextJitter( sys );
+    *delay = i_queued + sys->i_latency + Jitter( sys );
     return 0;
 }
 
@@ -251,6 +292,8 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
     if( sys != NULL )
     {
         sys->i_start = VLC_TICK_INVALID;
+        sys->i_origin = VLC_TICK_INVALID;
+        sys->i_played = 0;
         sys->i_written = 0;
         sys->i_rate = fmt->i_rate;
         sys->b_dry = false;
@@ -302,6 +345,7 @@ static int Open(vlc_object_t *obj)
     const vlc_tick_t i_jitter =
         VLC_TICK_FROM_MS( var_InheritInteger( obj, "adummy-jitter" ) );
     const int64_t i_drift = var_InheritInteger( obj, "adummy-drift" );
+    const bool b_virtual = var_InheritBool( obj, "adummy-virtual" );
     const uint16_t i_chans =
         ChansForCount( var_InheritInteger( obj, "adummy-channels" ) );
 
@@ -311,7 +355,8 @@ static int Open(vlc_object_t *obj)
     aout->stop = NULL;
 
     /* Asked for none of it, it answers nothing, as it always has. */
-    if( i_latency > 0 || i_jitter > 0 || i_drift != 0 || i_chans != 0 )
+    if( i_latency > 0 || i_jitter > 0 || i_drift != 0 || i_chans != 0
+     || b_virtual )
     {
         struct aout_sys_t *sys = malloc( sizeof (*sys) );
         if( unlikely(sys == NULL) )
@@ -321,10 +366,12 @@ static int Open(vlc_object_t *obj)
         sys->i_jitter = i_jitter;
         sys->i_drift = i_drift;
         sys->i_chans = i_chans;
-        sys->i_rng = (uint64_t)var_InheritInteger( obj, "adummy-seed" );
-        if( sys->i_rng == 0 )
-            sys->i_rng = 1; /* xorshift stays at zero for ever otherwise */
+        sys->b_virtual = b_virtual;
+        sys->i_seed = (uint64_t)var_InheritInteger( obj, "adummy-seed" );
+        sys->i_rng = 0;
         sys->i_start = VLC_TICK_INVALID;
+        sys->i_origin = VLC_TICK_INVALID;
+        sys->i_played = 0;
         sys->i_written = 0;
         sys->i_rate = 0;
         sys->b_dry = false;
@@ -338,7 +385,7 @@ static int Open(vlc_object_t *obj)
         /* Without any of the timing set there is nothing to report that the
          * caller does not already know, and a device that answers is not the
          * same case as one that does not. */
-        if( i_latency > 0 || i_jitter > 0 || i_drift != 0 )
+        if( i_latency > 0 || i_jitter > 0 || i_drift != 0 || b_virtual )
         {
             aout->time_get = TimeGet;
             aout->latency_get = LatencyGet;
