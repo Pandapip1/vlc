@@ -975,13 +975,16 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
            !p_sys->b_ignore_time_for_positions && b_bool && p_pmt )
         {
             time_t i_time, i_length = 0;
-            vlc_tick_t i_seektime = VLC_TICK_0 + vlc_tick_from_sec( i_length * f );
             if( !EITCurrentEventTime( p_pmt, p_sys, &i_time, &i_length ) &&
-                 i_length > 0 && !SeekToTime( p_demux, p_pmt, i_seektime ) )
+                 i_length > 0 )
             {
-                ReadyQueuesPostSeek( p_demux );
-                es_out_Control( p_demux->out, ES_OUT_SET_NEXT_DISPLAY_TIME, i_seektime );
-                return VLC_SUCCESS;
+                vlc_tick_t i_seektime = VLC_TICK_0 + vlc_tick_from_sec( i_length * f );
+                if( !SeekToTime( p_demux, p_pmt, i_seektime ) )
+                {
+                    ReadyQueuesPostSeek( p_demux );
+                    es_out_Control( p_demux->out, ES_OUT_SET_NEXT_DISPLAY_TIME, i_seektime );
+                    return VLC_SUCCESS;
+                }
             }
         }
 
