@@ -120,6 +120,7 @@ typedef struct
     unsigned  samples_standing;
     unsigned  bytes_overlap;
     unsigned  bytes_standing;
+    bool      overlap_primed; /* buf_overlap holds a tail to blend with */
     void     *buf_overlap;
     void     *table_blend;
     void    (*output_overlap)( filter_t *p_filter, void *p_out_buf, unsigned bytes_off );
@@ -248,7 +249,15 @@ static size_t transform_buffer( filter_t *p_filter,
         if( p->best_overlap_offset ) {
             bytes_off = p->best_overlap_offset( p_filter );
         }
-        p->output_overlap( p_filter, pout, bytes_off );
+        if( p->overlap_primed )
+            p->output_overlap( p_filter, pout, bytes_off );
+        else {
+            /* Nothing has gone out yet, so there is no tail to blend with.
+             * Blending against the empty buffer would fade the audio in over
+             * the length of the overlap. */
+            memcpy( pout, p->buf_queue + bytes_off, p->bytes_overlap );
+            p->overlap_primed = true;
+        }
     }
     memcpy( pout + p->bytes_overlap,
             p->buf_queue + bytes_off + p->bytes_overlap,
@@ -430,6 +439,7 @@ static int Open( vlc_object_t *p_this )
     p_sys->buf_pre_corr   = NULL;
     p_sys->table_window   = NULL;
     p_sys->bytes_overlap  = 0;
+    p_sys->overlap_primed = false;
     p_sys->bytes_queued   = 0;
     p_sys->bytes_to_slide = 0;
     p_sys->frames_stride_error = 0;
