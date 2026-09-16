@@ -125,8 +125,7 @@ error:
     owner->sync.drift_detune = 0.f;
     owner->sync.drift_bound = false;
     owner->sync.drift_said = VLC_TICK_INVALID;
-    aout_TraceStream (p_aout, owner->mixer_format.i_rate,
-                      aout_FiltersGetMaxDetune (owner->filters));
+    aout_TraceStream (p_aout, aout_FiltersGetMaxDetune (owner->filters));
     aout_OutputUnlock (p_aout);
 
     atomic_init (&owner->buffers_lost, 0);
@@ -186,7 +185,7 @@ static int aout_CheckReady (audio_output_t *aout)
         }
 
         msg_Dbg (aout, "restarting filters...");
-        aout_Trace (owner, .event = "restart");
+        aout_Trace (owner, .event = "restart", .latch = true);
         owner->sync.end = VLC_TICK_INVALID;
         owner->sync.source_end = VLC_TICK_INVALID;
         /* The new filters start with no correction, but the controller keeps
@@ -354,7 +353,7 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
             msg_Warn (aout, "playback way too early (%"PRId64"): "
                       "playing silence", drift);
         aout_DecSilence (aout, -drift, dec_pts);
-        aout_Trace (owner, .event = "silence", .reading = true,
+        aout_Trace (owner, .event = "silence", .reading = true, .latch = true,
                     .drift = drift, .delay = delay, .extra = -drift);
 
         owner->sync.discontinuity = true;
@@ -494,17 +493,25 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
          * insufficient. We assume the PTS is wrong and play the buffer anyway:
          * Hopefully video has encountered a similar PTS problem as audio. */
         msg_Warn (aout, "buffer too late (%"PRId64" us): dropped", advance);
-        aout_Trace (owner, .event = "droplate", .extra = advance);
+        aout_Trace (owner, .event = "droplate", .block = true, .latch = true,
+                    .extra = advance, .pts = block->i_pts,
+                    .end = owner->sync.source_end,
+                    .samples = block->i_nb_samples, .rate = input_rate,
+                    .codec = owner->source_codec, .es = owner->source_id);
         goto drop;
     }
     if (advance > AOUT_MAX_ADVANCE_TIME)
     {   /* Early buffers can only be caused by bugs in the decoder. */
         msg_Err (aout, "buffer too early (%"PRId64" us): dropped", advance);
-        aout_Trace (owner, .event = "dropearly", .extra = advance);
+        aout_Trace (owner, .event = "dropearly", .block = true, .latch = true,
+                    .extra = advance, .pts = block->i_pts,
+                    .end = owner->sync.source_end,
+                    .samples = block->i_nb_samples, .rate = input_rate,
+                    .codec = owner->source_codec, .es = owner->source_id);
         goto drop;
     }
-    if (block->i_flags & BLOCK_FLAG_DISCONTINUITY)
-        owner->sync.discontinuity = true;
+    const bool declared = (block->i_flags & BLOCK_FLAG_DISCONTINUITY) != 0;
+    const bool latched = owner->sync.discontinuity;
 
     /* Taken on the dates the decoder gives its blocks, before anything is
      * filtered, resampled or skipped: the question is whether the source
@@ -513,7 +520,17 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
      * block occupies of the timeline the dates are on. */
     const vlc_tick_t step = aout_TimelineStep (owner->sync.source_end,
                                                block->i_pts,
-                                               owner->sync.discontinuity);
+                                               latched || declared);
+
+    /* Before the latch below is applied, so that the row says what the block
+     * found rather than what it left behind. */
+    aout_Trace (owner, .event = (step != 0) ? "step"
+                              : declared ? "declared" : "block",
+                .block = true, .latch = (step != 0) || (declared && !latched),
+                .pts = block->i_pts, .end = owner->sync.source_end,
+                .samples = block->i_nb_samples, .rate = input_rate,
+                .extra = step, .codec = owner->source_codec,
+                .es = owner->source_id);
 
     owner->sync.source_end = aout_TimelineEnd (block->i_pts, block->i_length,
                                                input_rate);
@@ -525,15 +542,12 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
                   "made it is upstream", (const char *)&owner->source_codec,
                   owner->source_id, (step > 0) ? "a hole" : "an overlap",
                   (step > 0) ? step : -step);
-
-        aout_Trace (owner, .event = "step", .step = true, .extra = step,
-                    .codec = owner->source_codec, .es = owner->source_id);
-
-        /* Same treatment as a declared one: the offset either side of it is
-         * not drift, and it is put right where it is rather than worked off
-         * by running the whole stream off pitch. */
-        owner->sync.discontinuity = true;
     }
+
+    /* A step gets the same treatment as a declared one: the offset either
+     * side of it is not drift, and it is put right where it is rather than
+     * worked off by running the whole stream off pitch. */
+    owner->sync.discontinuity = latched || declared || step != 0;
 
     if (atomic_exchange(&owner->vp.update, false))
     {
@@ -666,7 +680,7 @@ void aout_DecFlush (audio_output_t *aout, bool wait)
         aout_OutputFlush (aout, wait);
     }
 
-    aout_Trace (owner, .event = "flush");
+    aout_Trace (owner, .event = "flush", .latch = true);
 
     /* The offset a flush leaves behind is not drift; do not resample to
      * catch it up. The correction accumulated so far describes the device and

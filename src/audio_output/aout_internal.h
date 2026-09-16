@@ -88,10 +88,9 @@ typedef struct
         bool discontinuity;
     } sync;
 
-    /** Where "aout-drift-trace" is being written, or NULL - which is what it
-     * is unless somebody asked, and the only thing the audio path then pays
-     * for the whole instrument. */
-    FILE *trace;
+    /** The drift trace, or NULL - which is what it is unless somebody asked,
+     * and the only thing the audio path then pays for the whole instrument. */
+    struct aout_trace *trace;
 
     int initial_stereo_mode; /**< Initial stereo mode set by options */
 
@@ -195,14 +194,18 @@ struct aout_trace_row
     vlc_tick_t drift, delay;
     bool command;           /**< The controller ran: p, cmd and tgt are real */
     float p, cmd, tgt;
-    bool step;              /**< extra is a step, from codec on stream es */
-    vlc_tick_t extra;       /**< Step, silence, jump or shortfall, in us */
+    bool block;             /**< A block arrived: pts, end, samples, rate real */
+    vlc_tick_t pts, end;
+    unsigned samples;
+    int rate;
     vlc_fourcc_t codec;
     int es;
+    bool latch;             /**< This is what set sync.discontinuity */
+    vlc_tick_t extra;       /**< Step, silence, jump or shortfall, in us */
 };
 
 void aout_TraceOpen (audio_output_t *);
-void aout_TraceStream (audio_output_t *, unsigned rate, float max);
+void aout_TraceStream (audio_output_t *, float max);
 void aout_TraceClose (audio_output_t *);
 void aout_TraceRow (aout_owner_t *, const struct aout_trace_row *);
 

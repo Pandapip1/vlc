@@ -26,11 +26,16 @@
  * is visible from outside. Faults in it have had to be reconstructed after
  * the fact from what the warnings happened to mention.
  *
- * Set "aout-drift-trace" and every reading is written down instead, as one
- * CSV row: what the device said it held, what the drift came to, what the
- * controller asked for, what the bound and the slew let through, and the
- * steps, silences, jumps and run-outs in between. Leave it unset and this
- * file costs one predictable branch per block and writes nothing.
+ * Set "aout-drift-trace" and every block and every reading is written down
+ * instead, as one CSV row: what the device said it held, what the drift came
+ * to, what the controller asked for, what the bound and the slew let through,
+ * and the steps, silences, jumps and run-outs in between. Leave it unset and
+ * this file costs one predictable branch per block and writes nothing.
+ *
+ * The column that is easiest to overlook is "disc". A latched discontinuity
+ * collapses the drift thresholds to zero for the block that follows it, so a
+ * correction fires there that the drift alone does not account for; without
+ * that column a reader sees the correction and not the reason.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -52,6 +57,19 @@
 #define AOUT_TRACE_BUFFER (256 * 1024)
 
 /**
+ * What the trace needs to keep that the output does not. Counting blocks is
+ * the instrument's business alone, and a stream that splices on every block
+ * reads as "since_blocks 1" here rather than as a density somebody has to
+ * measure off a plot.
+ */
+struct aout_trace
+{
+    FILE *f;
+    uint64_t blocks;    /**< Blocks the trace has seen */
+    uint64_t latched;   /**< What that count was when a latch was last seen */
+};
+
+/**
  * Opens the trace for the life of the output, not of one stream: an output is
  * kept across the items of a playlist, and a file per item would leave only
  * the last of them.
@@ -66,12 +84,14 @@ void aout_TraceOpen (audio_output_t *aout)
     if (path == NULL)
         return;
 
-    FILE *f = vlc_fopen (path, "we");
+    struct aout_trace *tr = calloc (1, sizeof (*tr));
+    FILE *f = (tr != NULL) ? vlc_fopen (path, "we") : NULL;
 
     if (f == NULL)
     {
         msg_Err (aout, "cannot write the drift trace to %s: %s", path,
                  vlc_strerror_c (errno));
+        free (tr);
         free (path);
         return;
     }
@@ -81,15 +101,17 @@ void aout_TraceOpen (audio_output_t *aout)
      * it measures alone, and an unbuffered write per block would not. */
     setvbuf (f, NULL, _IOFBF, AOUT_TRACE_BUFFER);
 
-    fprintf (f, "# vlc-aout-drift-trace 1\n");
+    fprintf (f, "# vlc-aout-drift-trace 2\n");
     fprintf (f, "# jump_us=%"PRId64" silence_us=%"PRId64" slop_us=%"PRId64"\n",
              (vlc_tick_t)(3 * AOUT_MAX_PTS_DELAY),
              (vlc_tick_t)(-3 * AOUT_MAX_PTS_ADVANCE),
              (vlc_tick_t)AOUT_MAX_TIMELINE_SLOP);
     fprintf (f, "t_us,event,drift_us,delay_us,p_cents,i_cents,cmd_cents,"
-                "tgt_cents,detune_cents,bound,extra_us,codec,es\n");
+                "tgt_cents,detune_cents,bound,extra_us,codec,es,"
+                "disc,pts_us,end_us,samples,in_rate,since_blocks\n");
 
-    owner->trace = f;
+    tr->f = f;
+    owner->trace = tr;
 }
 
 /**
@@ -97,19 +119,23 @@ void aout_TraceOpen (audio_output_t *aout)
  * trace needs these, or it cannot tell a command standing at its bound from
  * one that merely looks large.
  */
-void aout_TraceStream (audio_output_t *aout, unsigned rate, float max)
+void aout_TraceStream (audio_output_t *aout, float max)
 {
     aout_owner_t *owner = aout_owner (aout);
 
     if (owner->trace == NULL)
         return;
 
-    fprintf (owner->trace, "# epoch_us=%"PRId64" rate=%u\n", mdate (), rate);
-    fprintf (owner->trace, "# kp=%.4f ki=%.4f slew=%.4f max_cents=%.4f\n",
+    /* The source rate as well as the mixer's: reading a step back off the
+     * trace means recomputing the block length the way aout_DecPlay does,
+     * which is from the source's own rate. */
+    fprintf (owner->trace->f, "# epoch_us=%"PRId64" rate=%u src_rate=%u\n",
+             mdate (), owner->mixer_format.i_rate, owner->input_format.i_rate);
+    fprintf (owner->trace->f, "# kp=%.4f ki=%.4f slew=%.4f max_cents=%.4f\n",
              owner->sync.drift_kp, owner->sync.drift_ki,
              owner->sync.drift_slew, max);
 
-    aout_Trace (owner, .event = "start");
+    aout_Trace (owner, .event = "start", .latch = true);
 }
 
 void aout_TraceClose (audio_output_t *aout)
@@ -119,7 +145,8 @@ void aout_TraceClose (audio_output_t *aout)
     if (owner->trace == NULL)
         return;
 
-    fclose (owner->trace);
+    fclose (owner->trace->f);
+    free (owner->trace);
     owner->trace = NULL;
 }
 
@@ -134,7 +161,11 @@ void aout_TraceClose (audio_output_t *aout)
  */
 void aout_TraceRow (aout_owner_t *owner, const struct aout_trace_row *row)
 {
-    FILE *f = owner->trace;
+    struct aout_trace *tr = owner->trace;
+    FILE *f = tr->f;
+
+    if (row->block)
+        tr->blocks++;
 
     fprintf (f, "%"PRId64",%s,", mdate (), row->event);
 
@@ -158,13 +189,33 @@ void aout_TraceRow (aout_owner_t *owner, const struct aout_trace_row *row)
     fprintf (f, "%.4f,%d,", owner->sync.drift_detune,
              owner->sync.drift_bound ? 1 : 0);
 
-    if (row->step)
-        fprintf (f, "%"PRId64",%4.4s,%d\n", row->extra,
-                 (const char *)&row->codec, row->es);
-    else if (row->extra != 0)
-        fprintf (f, "%"PRId64",,\n", row->extra);
+    if (row->extra != 0)
+        fprintf (f, "%"PRId64",", row->extra);
     else
-        fprintf (f, ",,\n");
+        fprintf (f, ",");
+
+    if (row->block)
+        fprintf (f, "%4.4s,%d,", (const char *)&row->codec, row->es);
+    else
+        fprintf (f, ",,");
+
+    /* Read here rather than passed in, so that a row written before the
+     * latch is applied says what the block found rather than what it left. */
+    fprintf (f, "%d,", owner->sync.discontinuity ? 1 : 0);
+
+    if (row->block)
+        fprintf (f, "%"PRId64",%"PRId64",%u,%d,", row->pts, row->end,
+                 row->samples, row->rate);
+    else
+        fprintf (f, ",,,,");
+
+    if (row->latch)
+    {
+        fprintf (f, "%"PRIu64"\n", tr->blocks - tr->latched);
+        tr->latched = tr->blocks;
+    }
+    else
+        fprintf (f, "\n");
 }
 
 /**
