@@ -124,6 +124,7 @@ error:
     owner->sync.drift_integral = 0.f;
     owner->sync.drift_detune = 0.f;
     owner->sync.drift_bound = false;
+    owner->sync.drift_said = VLC_TICK_INVALID;
     aout_OutputUnlock (p_aout);
 
     atomic_init (&owner->buffers_lost, 0);
@@ -389,6 +390,18 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
                                                  + seconds);
 
     aout_FiltersSetDetune (owner->filters, owner->sync.drift_detune);
+
+    /* What the correction is doing is otherwise invisible: a resampled stream
+     * plays at the right position and the wrong pitch, and nothing says so.
+     * Once a second, which is a hundredth of the rate this is updated at and
+     * enough to follow it settling. */
+    if (owner->sync.drift_said == VLC_TICK_INVALID
+     || now - owner->sync.drift_said >= CLOCK_FREQ)
+    {
+        owner->sync.drift_said = now;
+        msg_Dbg (aout, "drift %"PRId64" us, detuning %+.3f cents",
+                 drift, (double)owner->sync.drift_detune);
+    }
 
     if (seconds > 0.f)
     {

@@ -76,6 +76,7 @@ typedef struct
         vlc_tick_t skip; /**< Material still to be jumped over */
         vlc_tick_t skip_settles; /**< When a jump can have taken effect */
         vlc_tick_t update; /**< When the correction was last updated */
+        vlc_tick_t drift_said; /**< When the correction was last reported */
         float drift_kp; /**< Proportional gain of the drift correction */
         float drift_ki; /**< Integral gain of the drift correction */
         float drift_integral; /**< Correction held by the integral term */
