@@ -1158,7 +1158,9 @@ static void AVI_SendFrame( demux_t *p_demux, avi_track_t *tk, block_t *p_frame )
 
     if( tk->i_next_block_flags )
     {
-        p_frame->i_flags = tk->i_next_block_flags;
+        /* Add to what the frame already carries: assigning here threw away
+         * the BLOCK_FLAG_TYPE_I or _TYPE_PB the caller had just set. */
+        p_frame->i_flags |= tk->i_next_block_flags;
         tk->i_next_block_flags = 0;
     }
 
