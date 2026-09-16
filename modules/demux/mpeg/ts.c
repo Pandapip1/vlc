@@ -200,6 +200,13 @@ static void SetEndPCR( demux_t *p_demux );
 
 static block_t* ReadTSPacket( demux_t *p_demux );
 static int SeekToTime( demux_t *p_demux, const ts_pmt_t *, vlc_tick_t time );
+static void ForgetContinuity( ts_pid_t *pid )
+{
+    pid->i_cc = 0xff;
+    pid->i_dup = 0;
+    memset( pid->prevpktbytes, 0, PREVPKTKEEPBYTES );
+}
+
 static void ReadyQueuesPostSeek( demux_t *p_demux );
 static void PCRHandle( demux_t *p_demux, ts_pid_t *, ts_90khz_t );
 static void PCRFixHandle( demux_t *, ts_pmt_t *, block_t * );
@@ -1897,15 +1904,17 @@ static void ReadyQueuesPostSeek( demux_t *p_demux )
      * pid would then report the jump it was itself asked for as a break in
      * the stream, and each break costs the packetizer the frame it is holding
      * and the decoder its start. Forget them instead, so the first packet
-     * after the seek is taken for what it is: the first one seen on that pid. */
+     * after the seek is taken for what it is: the first one seen on that pid.
+     *
+     * ts_pid_Next() walks only the pids that were allocated on demand; the
+     * pat and the base signalling pid sit in their own members and have to be
+     * named. */
+    ForgetContinuity( GetPID( p_sys, 0 ) );
+    ForgetContinuity( GetPID( p_sys, 0x1FFB ) );
     ts_pid_next_context_t ctx = ts_pid_NextContextInitValue;
     for( ts_pid_t *pid = ts_pid_Next( &p_sys->pids, &ctx );
          pid; pid = ts_pid_Next( &p_sys->pids, &ctx ) )
-    {
-        pid->i_cc = 0xff;
-        pid->i_dup = 0;
-        memset( pid->prevpktbytes, 0, PREVPKTKEEPBYTES );
-    }
+        ForgetContinuity( pid );
 
     ts_pat_t *p_pat = GetPID(p_sys, 0)->u.p_pat;
     for( int i=0; i< p_pat->programs.i_size; i++ )
