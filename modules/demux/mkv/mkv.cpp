@@ -297,7 +297,13 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
     switch( i_query )
     {
         case DEMUX_CAN_SEEK:
-            return vlc_stream_vaControl( p_demux->s, i_query, args );
+        {
+            bool *pb_seek = va_arg( args, bool * );
+
+            if( vlc_stream_Control( p_demux->s, STREAM_CAN_SEEK, pb_seek ) )
+                *pb_seek = false;
+            return VLC_SUCCESS;
+        }
 
         case DEMUX_GET_ATTACHMENTS:
             ppp_attach = va_arg( args, input_attachment_t*** );
