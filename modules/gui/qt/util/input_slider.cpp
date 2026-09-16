@@ -114,7 +114,6 @@ SeekSlider::SeekSlider( intf_thread_t *p_intf, Qt::Orientation q, QWidget *_pare
 
     /* Tooltip bubble */
     mTimeTooltip = new TimeTooltip( NULL );
-    mTimeTooltip->setMouseTracking( true );
 
     /* Properties */
     setRange( MIN_SLIDER_VALUE, MAX_SLIDER_VALUE );
@@ -170,7 +169,6 @@ SeekSlider::SeekSlider( intf_thread_t *p_intf, Qt::Orientation q, QWidget *_pare
     connect( seekLimitTimer, &QTimer::timeout, this, &SeekSlider::updatePos );
     connect( hideHandleTimer, &QTimer::timeout, this, &SeekSlider::hideHandle );
     connect( startAnimLoadingTimer, &QTimer::timeout, this, &SeekSlider::startAnimLoading );
-    mTimeTooltip->installEventFilter( this );
 
     connect(&wheelEventConverter, &WheelToVLCConverter::vlcWheelKey, this, [this](int vlcButton){
         vlc_tick_t i_size = var_InheritInteger( this->p_intf->obj.libvlc, "short-jump-size" );
@@ -494,18 +492,18 @@ void SeekSlider::enterEvent( QEvent * )
 void SeekSlider::leaveEvent( QEvent * )
 {
     hideHandleTimer->start();
-    /* Hide the tooltip
-       - if the mouse leave the slider rect (Note: it can still be
-         over the tooltip!)
-       - if another window is on the way of the cursor */
-    if( mTimeTooltip.isNull() )
-        return;
 
-    if( !rect().contains( mapFromGlobal( QCursor::pos() ) ) ||
-      ( !isActiveWindow() && !mTimeTooltip->isActiveWindow() ) )
-    {
+    /* The bubble is up because the pointer is on the bar, so it goes when the
+     * pointer does. It used to be kept while the pointer was over the tip
+     * itself, which was a window of its own and could sit over the slider; as
+     * a child widget above the bar and transparent to the mouse it cannot
+     * take the pointer from us any more. The test for that asked
+     * QCursor::pos() where the pointer was on the screen, which is both a
+     * question this widget has no business asking and an unreliable one: a
+     * pointer that leaves in one jump is reported here while that position
+     * still reads as inside the bar, and the bubble was left behind. */
+    if( !mTimeTooltip.isNull() )
         mTimeTooltip->hide();
-    }
 }
 
 void SeekSlider::paintEvent( QPaintEvent *ev )
@@ -543,28 +541,17 @@ void SeekSlider::hideEvent( QHideEvent * )
         mTimeTooltip->hide();
 }
 
-bool SeekSlider::eventFilter( QObject *obj, QEvent *event )
+bool SeekSlider::event( QEvent *event )
 {
-    if( obj == mTimeTooltip )
-    {
-        if( event->type() == QEvent::MouseMove )
-        {
-            QMouseEvent* mev = static_cast<QMouseEvent*>( event );
+    /* The bubble is drawn inside the window now, so nothing takes it down
+     * when that window stops being the one in front: as a window of its own
+     * it was a popup, and the compositor dismissed it for us. The pointer can
+     * rest on the bar while the window is deactivated, so there is no leave
+     * to hang this on. */
+    if( event->type() == QEvent::WindowDeactivate && !mTimeTooltip.isNull() )
+        mTimeTooltip->hide();
 
-            if( rect().contains( mapFromGlobal( mev->globalPos() ) ) )
-                return false;
-        }
-
-        if( event->type() == QEvent::Leave ||
-            event->type() == QEvent::MouseMove )
-        {
-            mTimeTooltip->hide();
-        }
-
-        return false;
-    }
-
-    return QSlider::eventFilter( obj, event );
+    return QSlider::event( event );
 }
 
 QSize SeekSlider::sizeHint() const
