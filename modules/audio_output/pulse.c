@@ -370,6 +370,23 @@ static void stream_stop(pa_stream *s, audio_output_t *aout)
         pa_operation_unref(op);
 }
 
+/**
+ * Throws away whatever the server still holds.
+ *
+ * The silence the clock is settled on stays queued when the stream is corked,
+ * and audio written next goes behind it: the start would be timed to the
+ * microsecond and still be heard a buffer late.
+ */
+static void stream_discard(pa_stream *s, audio_output_t *aout)
+{
+    pa_operation *op = pa_stream_flush(s, NULL, NULL);
+
+    if (likely(op != NULL))
+        pa_operation_unref(op);
+    else
+        vlc_pa_error(aout, "cannot flush", aout->sys->context);
+}
+
 static void stream_trigger_cb(pa_mainloop_api *api, pa_time_event *e,
                               const struct timeval *tv, void *userdata)
 {
@@ -1281,7 +1298,10 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
         if (sys->device_latency == VLC_TICK_INVALID)
             msg_Dbg(aout, "clock did not settle; measuring as it plays");
         else
+        {
             stream_stop(s, aout); /* start it again when the audio is due */
+            stream_discard(s, aout);
+        }
     }
 
     if (encoding == PA_ENCODING_PCM)
