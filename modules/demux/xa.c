@@ -212,8 +212,34 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 {
     demux_sys_t *p_sys  = p_demux->p_sys;
 
-    return demux_vaControlHelper( p_demux->s, HEADER_LENGTH,
+    int i_ret = demux_vaControlHelper( p_demux->s, HEADER_LENGTH,
         p_sys->i_data_size ? (int64_t)HEADER_LENGTH + p_sys->i_data_size : -1,
                                   p_sys->i_bitrate, p_sys->i_frame_size,
                                   i_query, args );
+    if( i_ret != VLC_SUCCESS )
+        return i_ret;
+
+    switch( i_query )
+    {
+        case DEMUX_SET_POSITION:
+        case DEMUX_SET_TIME:
+        {
+            /* The helper only moved the stream: resync the pts accumulator,
+             * else it would keep counting from before the seek and drift
+             * away from the byte derived DEMUX_GET_TIME. */
+            uint64_t i_ofs = vlc_stream_Tell( p_demux->s );
+            if( unlikely(i_ofs < HEADER_LENGTH) )
+                break;
+
+            /* Same byte to time conversion as demux_vaControlHelper(); the
+             * date holds an absolute pts here. */
+            date_Set( &p_sys->pts, VLC_TICK_0 + INT64_C(8000000)
+                      * (i_ofs - HEADER_LENGTH) / p_sys->i_bitrate );
+            break;
+        }
+        default:
+            break;
+    }
+
+    return VLC_SUCCESS;
 }
