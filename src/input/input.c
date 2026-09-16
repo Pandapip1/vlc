@@ -710,7 +710,16 @@ static int MainLoopTryRepeat( input_thread_t *p_input )
 }
 
 /* How much of the tail the output may still be holding when the next pass is
- * asked for. */
+ * asked for.
+ *
+ * It is a budget for the stall rather than an estimate of the restart: the
+ * restart is the small term - ogg is reading again in about a millisecond - so
+ * there is nothing a demuxer could advertise that would size this, and taking
+ * it from what the last pass cost would size it from the passes that did not
+ * need it. The read-ahead bounds it from above, so a lead beyond the caching
+ * just takes whatever the tail turns out to be at the end of the file. What it
+ * costs is the position report, which runs ahead of the sound by whatever is
+ * left unplayed. */
 #define INPUT_REPEAT_LEAD (CLOCK_FREQ / 4)
 
 /**
