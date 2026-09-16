@@ -829,7 +829,13 @@ static void MainLoop( input_thread_t *p_input, bool b_interactive )
             else if( b_pause_after_eof && input_priv(p_input)->b_can_pause )
             {
                 if( b_paused_at_eof )
+                {
+                    /* Pausing at the end takes priority over repeating, so
+                     * reaching here is an end: drain what was left undrained
+                     * above. */
+                    es_out_Eos( input_priv(p_input)->p_es_out );
                     break;
+                }
 
                 vlc_value_t val = { .i_int = PAUSE_S };
 
