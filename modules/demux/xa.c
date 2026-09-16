@@ -179,10 +179,16 @@ static int Demux( demux_t *p_demux )
 
     i_frames = p_block->i_buffer / p_sys->i_frame_size;
     p_block->i_dts = p_block->i_pts = date_Get( &p_sys->pts );
+    p_block->i_nb_samples = i_frames * FRAME_LENGTH;
+
+    /* The last read is short of a full block whenever the data does not
+     * divide by it, so say how far this one reaches rather than leave it to
+     * be guessed from the one before. */
+    p_block->i_length = date_Increment( &p_sys->pts, p_block->i_nb_samples )
+                      - p_block->i_dts;
+
     es_out_SetPCR( p_demux->out, p_block->i_pts );
     es_out_Send( p_demux->out, p_sys->p_es, p_block );
-
-    date_Increment( &p_sys->pts, i_frames * FRAME_LENGTH );
 
     return VLC_DEMUXER_SUCCESS;
 }
