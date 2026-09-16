@@ -182,8 +182,12 @@ static int Open( vlc_object_t *p_this )
         }
     }
 
+    /* The chunk carries the offset and block size fields before the sound
+     * data, and the offset skips further bytes still, so what is left to play
+     * is the chunk less both. */
     p_sys->i_ssnd_start = p_sys->i_ssnd_pos + 16 + p_sys->i_ssnd_offset;
-    p_sys->i_ssnd_end   = p_sys->i_ssnd_start + p_sys->i_ssnd_size;
+    p_sys->i_ssnd_end   = p_sys->i_ssnd_start
+                        + p_sys->i_ssnd_size - 8 - p_sys->i_ssnd_offset;
 
     p_sys->i_ssnd_fsize = p_sys->fmt.audio.i_channels *
                           ((p_sys->fmt.audio.i_bitspersample + 7) / 8);
@@ -194,7 +198,7 @@ static int Open( vlc_object_t *p_this )
         goto error;
     }
 
-    if( p_sys->i_ssnd_size <= 0 )
+    if( p_sys->i_ssnd_end <= p_sys->i_ssnd_start )
     {
         /* unknown */
         p_sys->i_ssnd_end = 0;
