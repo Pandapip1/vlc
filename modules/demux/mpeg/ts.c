@@ -910,6 +910,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
     int64_t i64;
     int64_t *pi64;
     int i_int;
+    int i_ret;
     const ts_pmt_t *p_pmt = NULL;
     const ts_pat_t *p_pat = GetPID(p_sys, 0)->u.p_pat;
 
@@ -1140,11 +1141,18 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
     }
 
     case DEMUX_SET_TITLE:
-        return vlc_stream_vaControl( p_sys->stream, STREAM_SET_TITLE, args );
-
     case DEMUX_SET_SEEKPOINT:
-        return vlc_stream_vaControl( p_sys->stream, STREAM_SET_SEEKPOINT,
-                                     args );
+        /* The stream repositions itself, which is as much a seek as
+         * DEMUX_SET_TIME is, so leave behind what a seek leaves behind:
+         * continuity counters forgotten, queued packets dropped and the
+         * elementary streams told their data is not continuous. */
+        i_ret = vlc_stream_vaControl( p_sys->stream,
+                                      (i_query == DEMUX_SET_TITLE)
+                                          ? STREAM_SET_TITLE
+                                          : STREAM_SET_SEEKPOINT, args );
+        if( i_ret == VLC_SUCCESS )
+            ReadyQueuesPostSeek( p_demux );
+        return i_ret;
 
     case DEMUX_GET_META:
         return vlc_stream_vaControl( p_sys->stream, STREAM_GET_META, args );
