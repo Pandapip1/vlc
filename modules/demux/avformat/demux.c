@@ -976,6 +976,22 @@ static void UpdateSeekPoint( demux_t *p_demux, int64_t i_time )
     }
 }
 
+/* Where to seek to reach the beginning of the item.
+ *
+ * libavformat hands over frames that sit before the origin it reports: an
+ * mp3's encoder delay is declared in its Xing header and counted into
+ * start_time, so the frames carrying that delay are timestamped below it.
+ * av_seek_frame() answers with the last frame at or before the timestamp it
+ * is given, so asking for the origin starts the item a frame in, and those
+ * frames are handed over on the opening pass alone - every repeat of the item
+ * then loses them, and the loss gathers loop after loop. Ask below the origin
+ * instead: a seek to a timestamp the container does not reach lands on its
+ * first frame, which is what the beginning of the item means. */
+static int64_t SeekTargetForStart( int64_t i_start_time )
+{
+    return i_start_time > 0 ? 0 : i_start_time;
+}
+
 static void ResetTime( demux_t *p_demux, int64_t i_time )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
@@ -1063,15 +1079,19 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             return VLC_SUCCESS;
 
         case DEMUX_SET_POSITION:
+        {
             f = va_arg( args, double );
             i64 = p_sys->ic->duration * f + i_start_time;
 
-            msg_Warn( p_demux, "DEMUX_SET_POSITION: %"PRId64, i64 );
+            const int64_t i_seek_ts = ( f <= 0.f ) ? SeekTargetForStart( i_start_time )
+                                                   : i64;
+
+            msg_Warn( p_demux, "DEMUX_SET_POSITION: %"PRId64, i_seek_ts );
 
             /* If we have a duration, we prefer to seek by time
                but if we don't, or if the seek fails, try BYTE seeking */
             if( p_sys->ic->duration == (int64_t)AV_NOPTS_VALUE ||
-                (av_seek_frame( p_sys->ic, -1, i64, AVSEEK_FLAG_BACKWARD ) < 0) )
+                (av_seek_frame( p_sys->ic, -1, i_seek_ts, AVSEEK_FLAG_BACKWARD ) < 0) )
             {
                 int64_t i_size = stream_Size( p_demux->s );
                 i64 = (i_size * f);
@@ -1087,6 +1107,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
                 ResetTime( p_demux, i64 - i_start_time );
             }
             return VLC_SUCCESS;
+        }
 
         case DEMUX_GET_LENGTH:
             pi64 = va_arg( args, int64_t * );
@@ -1103,12 +1124,15 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 
         case DEMUX_SET_TIME:
         {
-            i64 = va_arg( args, int64_t );
-            i64 = i64 *AV_TIME_BASE / 1000000 + i_start_time;
+            const int64_t i_time = va_arg( args, int64_t );
+            i64 = i_time * AV_TIME_BASE / 1000000 + i_start_time;
 
-            msg_Warn( p_demux, "DEMUX_SET_TIME: %"PRId64, i64 );
+            const int64_t i_seek_ts = ( i_time <= 0 )
+                                    ? SeekTargetForStart( i_start_time ) : i64;
 
-            if( av_seek_frame( p_sys->ic, -1, i64, AVSEEK_FLAG_BACKWARD ) < 0 )
+            msg_Warn( p_demux, "DEMUX_SET_TIME: %"PRId64, i_seek_ts );
+
+            if( av_seek_frame( p_sys->ic, -1, i_seek_ts, AVSEEK_FLAG_BACKWARD ) < 0 )
             {
                 return VLC_EGENERIC;
             }
