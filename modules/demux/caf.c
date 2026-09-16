@@ -988,8 +988,10 @@ static int Demux( demux_t *p_demux )
 
     if( !advance.i_frames )
     {
-        msg_Err( p_demux, "Unexpected end of file" );
-        return -1;
+        /* Neither the packet table nor the data chunk has another whole frame
+         * left in it: the file has ended, which is not an error. */
+        msg_Dbg( p_demux, "end of file" );
+        return VLC_DEMUXER_EOF;
     }
 
     if( vlc_stream_Seek( p_demux->s, p_sys->i_data_offset + p_sys->position.i_bytes ))
@@ -1004,8 +1006,14 @@ static int Demux( demux_t *p_demux )
     p_block = vlc_stream_Block( p_demux->s, (int)advance.i_bytes );
     if( p_block == NULL )
     {
+        if( vlc_stream_Eof( p_demux->s ) )
+        {
+            msg_Dbg( p_demux, "end of file" );
+            return VLC_DEMUXER_EOF;
+        }
+
         msg_Err( p_demux, "cannot read data" );
-        return -1;
+        return VLC_DEMUXER_EGENERIC;
     }
 
     p_block->i_dts =
