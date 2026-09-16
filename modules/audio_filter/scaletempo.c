@@ -602,7 +602,6 @@ static block_t *DoWork( filter_t * p_filter, block_t * p_in_buf )
       p->scale = scale;
       p->bytes_stride_scaled  = p->bytes_stride * p->scale;
       p->frames_stride_scaled = p->bytes_stride_scaled / p->bytes_per_frame;
-      p->bytes_to_slide = 0;
     }
 
     size_t i_outsize = calculate_output_buffer_size ( p_filter, p_in_buf->i_buffer );
