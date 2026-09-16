@@ -74,6 +74,7 @@ typedef struct
 
     vlc_tick_t i_last_pcr;
     vlc_tick_t i_pcr_step;
+    vlc_tick_t i_last_end; /* how far along the timeline data has been sent */
 
     vlc_meta_t *p_meta;
 } es_out_pgrm_t;
@@ -97,6 +98,7 @@ struct es_out_id_t
     decoder_t   *p_dec_record;
 
     vlc_tick_t  i_pts_level;
+    vlc_tick_t  i_prev_date; /* date of the block before this one */
 
     /* Fields for Video with CC */
     struct
@@ -657,7 +659,10 @@ static void EsOutChangePosition( es_out_t *out, bool b_flush )
             }
         }
         if( b_flush )
+        {
             p_es->i_pts_level = VLC_TICK_INVALID;
+            p_es->i_prev_date = VLC_TICK_INVALID;
+        }
     }
 
     /* A repeat carries the timeline straight on: the timestamps the demuxer
@@ -671,6 +676,7 @@ static void EsOutChangePosition( es_out_t *out, bool b_flush )
             input_clock_Reset( p_sys->pgrm[i]->p_clock );
             p_sys->pgrm[i]->i_last_pcr = VLC_TICK_INVALID;
             p_sys->pgrm[i]->i_pcr_step = 0;
+            p_sys->pgrm[i]->i_last_end = VLC_TICK_INVALID;
         }
 
         /* A new reference is taken from whatever the demuxer emits next, so
@@ -722,11 +728,26 @@ static void EsOutRepeatShift( es_out_t *out, es_out_pgrm_t *p_pgrm,
     if( i_timeline >= p_pgrm->i_last_pcr )
         return; /* the demuxer carried the timeline across the seek */
 
-    /* Resume one cadence step past the date the last pass stopped at: that
-     * step is what an accumulator left counting would have added, so the new
-     * pass takes over exactly where the audio already queued for it ends. */
-    p_sys->i_repeat_offset += p_pgrm->i_last_pcr + p_pgrm->i_pcr_step
-                            - i_timeline;
+    /* Resume where the last pass stopped. A cadence step past the last pcr is
+     * a guess at that, and a good one only when the cadence happens to divide
+     * the item: mp4 reads a pcr every 250 ms and avi every 25 ms, and each of
+     * those was a hole of exactly its own cadence at every loop, with the
+     * output playing silence across the difference.
+     *
+     * The data the demuxer has already handed over says where the pass really
+     * ended, so take that when it is nearer. Never take it further out than
+     * the cadence: a demuxer whose dates run ahead of its pcr would otherwise
+     * push the next pass past a hole rather than close one, and never nearer
+     * than the pcr itself, which is ground already covered. */
+    const vlc_tick_t i_cadence = p_pgrm->i_last_pcr + p_pgrm->i_pcr_step;
+    vlc_tick_t i_resume = p_pgrm->i_last_end;
+
+    if( i_resume <= VLC_TICK_INVALID || i_resume > i_cadence )
+        i_resume = i_cadence;
+    if( i_resume < p_pgrm->i_last_pcr )
+        i_resume = p_pgrm->i_last_pcr;
+
+    p_sys->i_repeat_offset += i_resume - i_timeline;
 
     msg_Dbg( p_sys->p_input, "repeat: the demuxer restarted its timeline, "
              "carrying it on %"PRId64" ms further",
@@ -1174,6 +1195,7 @@ static es_out_pgrm_t *EsOutProgramAdd( es_out_t *out, int i_group )
     p_pgrm->b_scrambled = false;
     p_pgrm->i_last_pcr = VLC_TICK_INVALID;
     p_pgrm->i_pcr_step = 0;
+    p_pgrm->i_last_end = VLC_TICK_INVALID;
     p_pgrm->p_meta = NULL;
     p_pgrm->p_clock = input_clock_New( p_sys->i_rate );
     if( !p_pgrm->p_clock )
@@ -1719,6 +1741,7 @@ static es_out_id_t *EsOutAddSlave( es_out_t *out, const es_format_t *fmt, es_out
     es->cc.i_bitmap = 0;
     es->p_master = p_master;
     es->i_pts_level = VLC_TICK_INVALID;
+    es->i_prev_date = VLC_TICK_INVALID;
 
     TAB_APPEND( p_sys->i_es, p_sys->es, es );
 
@@ -2174,6 +2197,28 @@ static int EsOutSend( es_out_t *out, es_out_id_t *es, block_t *p_block )
             p_block->i_dts += p_sys->i_repeat_offset;
         if( p_block->i_pts > VLC_TICK_INVALID )
             p_block->i_pts += p_sys->i_repeat_offset;
+    }
+
+    /* How far along the timeline data has been handed over, which is where a
+     * repeat has to carry the next pass on from. Plenty of demuxers date a
+     * block without saying how long it is; the step from the block before it
+     * is the same thing measured a block late. */
+    if( es->p_pgrm != NULL )
+    {
+        const vlc_tick_t i_date = p_block->i_dts > VLC_TICK_INVALID ?
+                                  p_block->i_dts : p_block->i_pts;
+        if( i_date > VLC_TICK_INVALID )
+        {
+            vlc_tick_t i_len = p_block->i_length;
+
+            if( i_len <= 0 && es->i_prev_date > VLC_TICK_INVALID
+             && i_date > es->i_prev_date )
+                i_len = i_date - es->i_prev_date;
+
+            if( i_date + i_len > es->p_pgrm->i_last_end )
+                es->p_pgrm->i_last_end = i_date + i_len;
+            es->i_prev_date = i_date;
+        }
     }
 
     /* Drop all ESes except the video one in case of next-frame */
