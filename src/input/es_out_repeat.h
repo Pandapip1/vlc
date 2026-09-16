@@ -62,4 +62,31 @@ static inline vlc_tick_t es_out_RepeatResume( vlc_tick_t i_last_end,
     return i_resume;
 }
 
+/**
+ * How far short of the timeline a repeated pass begins, or zero if it is
+ * already at or past where the last pass stopped.
+ *
+ * Whether the demuxer restarted is answered by where the new pass begins
+ * against where the last one stopped, never against the last pcr on its own.
+ * A pcr is a lower bound on the pass, and a demuxer whose pcr does not move
+ * within an item - tta reads one per 1.04 s frame, so a file of a single
+ * frame reads exactly one - emits the very same value again after the seek.
+ * Compared against that pcr a full restart reads as no restart at all.
+ *
+ * \param i_timeline where the new pass says it begins, on the timeline
+ * \param i_last_end how far the data handed over reaches, or VLC_TICK_INVALID
+ * \param i_last_pcr the last pcr of the pass that is ending
+ * \param i_pcr_step the interval this demuxer reads pcrs at
+ */
+static inline vlc_tick_t es_out_RepeatShortfall( vlc_tick_t i_timeline,
+                                                 vlc_tick_t i_last_end,
+                                                 vlc_tick_t i_last_pcr,
+                                                 vlc_tick_t i_pcr_step )
+{
+    const vlc_tick_t i_resume = es_out_RepeatResume( i_last_end, i_last_pcr,
+                                                     i_pcr_step );
+
+    return ( i_timeline < i_resume ) ? i_resume - i_timeline : 0;
+}
+
 #endif

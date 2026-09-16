@@ -44,6 +44,20 @@ static void expect( const char *psz_what, vlc_tick_t i_last_end,
     }
 }
 
+static void shortfall( const char *psz_what, vlc_tick_t i_timeline,
+                       vlc_tick_t i_last_end, vlc_tick_t i_last_pcr,
+                       vlc_tick_t i_pcr_step, vlc_tick_t i_expected )
+{
+    vlc_tick_t i_got = es_out_RepeatShortfall( i_timeline, i_last_end,
+                                               i_last_pcr, i_pcr_step );
+    if( i_got != i_expected )
+    {
+        fprintf( stderr, "%s: short by %"PRId64", expected %"PRId64"\n",
+                 psz_what, i_got, i_expected );
+        fail = 1;
+    }
+}
+
 int main( void )
 {
     /* The shapes below are what these demuxers actually report at the end of
@@ -73,6 +87,26 @@ int main( void )
 
     /* An end exactly on the pcr is not moved. */
     expect( "end on pcr", 3950002, 3950002, 50000, 3950002 );
+
+    /* A demuxer whose pcr does not move within an item emits the same value
+     * again after the seek, so the pass has to be told apart from a carried
+     * timeline by where the last one's data stopped. tone.tta is a single
+     * 1.04 s frame: one pcr of VLC_TICK_0 per pass, a second of data behind
+     * it, and against the pcr alone a restart is invisible. Passes one to
+     * three then play on top of each other and the fourth inflates pts_delay
+     * by 1.75 s, which the output covers with silence. */
+    shortfall( "tta restart", VLC_TICK_0, 1000001, VLC_TICK_0, 0, 1000000 );
+    shortfall( "tta second restart", 1000001, 2000001, 1000001, 0, 1000000 );
+
+    /* A demuxer that carried the timeline measures nothing. These are the
+     * shapes above as they read at a seam, the new pass beginning where the
+     * last one's data stopped or beyond it. */
+    shortfall( "carried, exactly", 4011001, 4011001, 3963001, 23000, 0 );
+    shortfall( "carried, beyond", 4030000, 4011001, 3963001, 23000, 0 );
+
+    /* Restarted, the ordinary case: the pass begins at the item's start and
+     * the whole of the last pass has to be carried. */
+    shortfall( "ogg restart", 13060, 4006893, 4000001, 945125, 3993833 );
 
     return fail;
 }

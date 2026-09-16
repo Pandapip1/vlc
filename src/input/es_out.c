@@ -763,16 +763,16 @@ static void EsOutRepeatShift( es_out_t *out, es_out_pgrm_t *p_pgrm,
     if( p_pgrm == NULL || p_pgrm->i_last_pcr <= VLC_TICK_INVALID )
         return;
 
-    const vlc_tick_t i_timeline = i_date + p_sys->i_repeat_offset;
-    if( i_timeline >= p_pgrm->i_last_pcr )
+    /* Where the last pass stopped, and how far short of it the demuxer has
+     * fallen: see es_out_RepeatShortfall(). */
+    const vlc_tick_t i_short =
+        es_out_RepeatShortfall( i_date + p_sys->i_repeat_offset,
+                                EsOutDecodersEnd( out, p_pgrm ),
+                                p_pgrm->i_last_pcr, p_pgrm->i_pcr_step );
+    if( i_short == 0 )
         return; /* the demuxer carried the timeline across the seek */
 
-    /* Where the last pass stopped: see es_out_RepeatResume(). */
-    const vlc_tick_t i_end = EsOutDecodersEnd( out, p_pgrm );
-    const vlc_tick_t i_resume = es_out_RepeatResume( i_end, p_pgrm->i_last_pcr,
-                                                     p_pgrm->i_pcr_step );
-
-    p_sys->i_repeat_offset += i_resume - i_timeline;
+    p_sys->i_repeat_offset += i_short;
 
     msg_Dbg( p_sys->p_input, "repeat: the demuxer restarted its timeline, "
              "carrying it on %"PRId64" ms further",
