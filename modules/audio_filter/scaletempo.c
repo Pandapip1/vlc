@@ -414,6 +414,26 @@ static int reinit_buffers( filter_t *p_filter )
 }
 
 /*****************************************************************************
+ * Flush: discard the audio held between strides
+ *****************************************************************************/
+static void Flush( filter_t *p_filter )
+{
+    filter_sys_t *p = p_filter->p_sys;
+
+    p->bytes_queued        = 0;
+    p->bytes_to_slide      = 0;
+    p->frames_stride_error = 0;
+
+    /* What the overlap buffer holds is from before the discontinuity; blending
+     * the audio that follows into it would splice the two together. */
+    p->overlap_primed      = false;
+
+#ifdef PITCH_SHIFTER
+    filter_Flush( p->resampler );
+#endif
+}
+
+/*****************************************************************************
  * Open: initialize as "audio filter"
  *****************************************************************************/
 static int Open( vlc_object_t *p_this )
@@ -465,6 +485,7 @@ static int Open( vlc_object_t *p_this )
     aout_FormatPrepare(&p_filter->fmt_in.audio);
     p_filter->fmt_out.audio = p_filter->fmt_in.audio;
     p_filter->pf_audio_filter = DoWork;
+    p_filter->pf_flush = Flush;
 
     return VLC_SUCCESS;
 }
