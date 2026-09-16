@@ -2712,7 +2712,8 @@ void vlc_input_decoder_Decode(vlc_input_decoder_t *p_owner, vlc_frame_t *frame,
     vlc_input_decoder_DecodeWithStatus(p_owner, frame, b_do_pace, NULL);
 }
 
-static bool vlc_input_decoder_IsDrainedLocked(vlc_input_decoder_t *owner)
+static bool vlc_input_decoder_IsDrainedLocked(vlc_input_decoder_t *owner,
+                                              vlc_tick_t i_lead)
 {
     vlc_fifo_Assert(owner->p_fifo);
 
@@ -2723,7 +2724,16 @@ static bool vlc_input_decoder_IsDrainedLocked(vlc_input_decoder_t *owner)
     else if (owner->cat == VIDEO_ES && owner->video.vout != NULL)
         return vout_IsEmpty(owner->video.vout);
     else if(owner->cat == AUDIO_ES && owner->audio.stream != NULL)
-        return vlc_aout_stream_IsDrained( owner->audio.stream);
+    {
+        if (vlc_aout_stream_IsDrained(owner->audio.stream))
+            return true;
+
+        /* Nothing was drained: the fifo being empty only says the decoder has
+         * nothing left to hand over, not that any of it has been heard.
+         * Whoever is waiting for the end is waiting for the sound, and is
+         * given i_lead of it to have the next thing ready in. */
+        return vlc_aout_stream_GetRemaining(owner->audio.stream) <= i_lead;
+    }
     else
         return true; /* TODO subtitles support */
 }
@@ -2731,7 +2741,7 @@ static bool vlc_input_decoder_IsDrainedLocked(vlc_input_decoder_t *owner)
 bool vlc_input_decoder_IsDrained(vlc_input_decoder_t *owner)
 {
     vlc_fifo_Lock(owner->p_fifo);
-    bool drained = vlc_input_decoder_IsDrainedLocked(owner);
+    bool drained = vlc_input_decoder_IsDrainedLocked(owner, 0);
     vlc_fifo_Unlock(owner->p_fifo);
     return drained;
 }
@@ -2747,7 +2757,11 @@ bool vlc_input_decoder_IsEmpty( vlc_input_decoder_t * p_owner )
         return false;
     }
 
-    bool b_empty = vlc_input_decoder_IsDrainedLocked( p_owner );
+    /* The output plays what it is given a buffer at a time, so the last of it
+     * is as good as played once it is the only thing left - and whoever is
+     * waiting has to demux and decode before any sound reaches the output. */
+    bool b_empty = vlc_input_decoder_IsDrainedLocked( p_owner,
+                                                      AOUT_MAX_PTS_ADVANCE );
 
     vlc_fifo_Unlock( p_owner->p_fifo );
 

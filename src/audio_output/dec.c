@@ -1032,6 +1032,18 @@ bool vlc_aout_stream_IsDrained(vlc_aout_stream *stream)
     return stream_IsDrained(stream);
 }
 
+vlc_tick_t vlc_aout_stream_GetRemaining(vlc_aout_stream *stream)
+{
+    vlc_tick_t delay;
+
+    vlc_mutex_lock(&stream->timing.lock);
+    if (stream_GetDelay(stream, &delay) != 0)
+        delay = 0;
+    vlc_mutex_unlock(&stream->timing.lock);
+
+    return delay > 0 ? delay : 0;
+}
+
 void vlc_aout_stream_Drain(vlc_aout_stream *stream)
 {
     audio_output_t *aout = aout_stream_aout(stream);

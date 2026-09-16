@@ -175,6 +175,15 @@ void vlc_aout_stream_Drain(vlc_aout_stream *stream);
 /* Contrary to other vlc_aout_stream_*() functions, this function can be called from
  * any threads */
 bool vlc_aout_stream_IsDrained(vlc_aout_stream *stream);
+
+/**
+ * How long what the output still holds will take to play.
+ *
+ * For pacing on the end of what was handed over without draining, which also
+ * stops the output - the wrong thing to do when more is about to follow it.
+ * Zero when the output has nothing left or cannot say.
+ */
+vlc_tick_t vlc_aout_stream_GetRemaining(vlc_aout_stream *stream);
 /* Called from output.c */
 void vlc_aout_stream_NotifyTiming(vlc_aout_stream *stream, vlc_tick_t system_ts,
                                   vlc_tick_t audio_ts);
