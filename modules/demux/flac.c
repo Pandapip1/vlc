@@ -488,7 +488,9 @@ static int ControlSetTime( demux_t *p_demux, vlc_tick_t i_time )
     }
     else
     {
-        i_start_pos = i_time / i_bytemicrorate;
+        /* The rate above is over the audio data alone, so what it converts
+         * the time into is an offset within that data, not within the file. */
+        i_start_pos = p_sys->i_data_pos + i_time / i_bytemicrorate;
     }
 
     if( VLC_SUCCESS != vlc_stream_Seek( p_demux->s, i_start_pos ) )
