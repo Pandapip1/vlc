@@ -361,6 +361,7 @@ static int Demux( demux_t *p_demux )
     demux_sys_t *p_sys = p_demux->p_sys;
     int64_t i_maxdate;
     int i_read;
+    bool b_remaining = false;
 
     for( int i = 0; i < p_sys->i_tracks; i++ )
     {
@@ -425,13 +426,21 @@ static int Demux( demux_t *p_demux )
 
             tk.i_current_subtitle++;
         }
+
+        if( tk.i_current_subtitle < tk.i_subtitles )
+            b_remaining = true;
 #undef tk
     }
 
     /* */
     p_sys->i_next_demux_date = 0;
 
-    return 1;
+    /* Every track has run out, so there is nothing left to hand over ever
+     * again: say so instead of claiming progress for ever. */
+    if( !b_remaining )
+        return VLC_DEMUXER_EOF;
+
+    return VLC_DEMUXER_SUCCESS;
 }
 
 static int TextLoad( text_t *txt, stream_t *s )
