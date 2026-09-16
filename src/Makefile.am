@@ -243,6 +243,7 @@ libvlccore_la_SOURCES = \
 	input/decoder.h \
 	input/demux.h \
 	input/es_out.h \
+	input/es_out_repeat.h \
 	input/es_out_timeshift.h \
 	input/event.h \
 	input/item.h \

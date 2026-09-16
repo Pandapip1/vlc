@@ -44,6 +44,7 @@
 #include "clock.h"
 #include "decoder.h"
 #include "es_out.h"
+#include "es_out_repeat.h"
 #include "event.h"
 #include "info.h"
 #include "item.h"
@@ -728,31 +729,10 @@ static void EsOutRepeatShift( es_out_t *out, es_out_pgrm_t *p_pgrm,
     if( i_timeline >= p_pgrm->i_last_pcr )
         return; /* the demuxer carried the timeline across the seek */
 
-    /* Resume where the last pass stopped. A cadence step past the last pcr is
-     * a guess at that, and a good one only when the cadence happens to divide
-     * the item: mp4 reads a pcr every 250 ms and avi every 25 ms, and each of
-     * those was a hole of exactly its own cadence at every loop, with the
-     * output playing silence across the difference.
-     *
-     * The data the demuxer has already handed over says where the pass really
-     * ended, so take that, and the cadence only when there is none to take.
-     * Never nearer than the pcr itself, which is ground already covered.
-     *
-     * It is not bounded above by the cadence. A container that carries its
-     * timestamps in cluster or packet headers emits the pcr before the blocks
-     * it covers have all been handed over, so an end further out than one
-     * cadence step past it is ordinary rather than the mark of a demuxer
-     * running ahead: matroska ends 48 ms past a pcr it steps 23 ms at a time,
-     * and the bound cost it 25 ms of its own content at every loop. A demuxer
-     * whose pcr genuinely outruns its data is held back where that belongs,
-     * in the demuxer. */
-    const vlc_tick_t i_cadence = p_pgrm->i_last_pcr + p_pgrm->i_pcr_step;
-    vlc_tick_t i_resume = p_pgrm->i_last_end;
-
-    if( i_resume <= VLC_TICK_INVALID )
-        i_resume = i_cadence;
-    if( i_resume < p_pgrm->i_last_pcr )
-        i_resume = p_pgrm->i_last_pcr;
+    /* Where the last pass stopped: see es_out_RepeatResume(). */
+    const vlc_tick_t i_resume = es_out_RepeatResume( p_pgrm->i_last_end,
+                                                     p_pgrm->i_last_pcr,
+                                                     p_pgrm->i_pcr_step );
 
     p_sys->i_repeat_offset += i_resume - i_timeline;
 
