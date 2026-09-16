@@ -661,6 +661,14 @@ static void Ogg_PreparePostSeek( demux_sys_t *p_sys )
 {
     for( int i = 0; i < p_sys->i_streams; i++ )
     {
+        /* A seek taken once the eos page has been read, but before the streams
+         * have been torn down, must not leave the stream flagged finished:
+         * Demux() counts the active ones before it reads anything, and would
+         * take the chained stream handover for what is only a seek. The
+         * skeleton keeps its flag, as it does when pages follow eos: there it
+         * is what says preparsing is done. */
+        if( p_sys->pp_stream[i] != p_sys->p_skelstream )
+            p_sys->pp_stream[i]->b_finished = false;
         Ogg_ResetStream( p_sys->pp_stream[i] );
         p_sys->pp_stream[i]->i_next_block_flags = BLOCK_FLAG_DISCONTINUITY;
     }
