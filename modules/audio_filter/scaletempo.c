@@ -591,7 +591,10 @@ static block_t *DoWork( filter_t * p_filter, block_t * p_in_buf )
 {
     filter_sys_t *p = p_filter->p_sys;
 
-    if( p_filter->fmt_in.audio.i_rate == p->sample_rate )
+    /* Passing a block straight through while a stride is still being gathered
+     * would put it in front of what is held, leaving a hole the length of the
+     * queue. Take the shortcut only while there is nothing to hold up. */
+    if( p_filter->fmt_in.audio.i_rate == p->sample_rate && p->bytes_queued == 0 )
         return p_in_buf;
 
     double scale = p_filter->fmt_in.audio.i_rate / (double)p->sample_rate;
@@ -614,15 +617,26 @@ static block_t *DoWork( filter_t * p_filter, block_t * p_in_buf )
         return NULL;
     }
 
+    /* What goes out is the head of the queue, which is as much older than this
+     * block as the queue is deep. Carrying the block's own timestamp over would
+     * put the output ahead of the audio in it, and the output reads the
+     * difference as drift it then answers for. The queue is measured at the
+     * rate it is consumed at, which is the one the timestamps advance on. */
+    vlc_tick_t held = ( (vlc_tick_t)p->bytes_queued - p->bytes_to_slide )
+                      * CLOCK_FREQ
+                      / ( (vlc_tick_t)p->bytes_per_frame
+                          * p_filter->fmt_in.audio.i_rate );
+
     size_t bytes_out = transform_buffer( p_filter,
         p_in_buf->p_buffer, p_in_buf->i_buffer,
         p_out_buf->p_buffer );
 
     p_out_buf->i_buffer     = bytes_out;
     p_out_buf->i_nb_samples = bytes_out / p->bytes_per_frame;
-    p_out_buf->i_dts        = p_in_buf->i_dts;
-    p_out_buf->i_pts        = p_in_buf->i_pts;
-    p_out_buf->i_length     = p_in_buf->i_length;
+    p_out_buf->i_dts        = p_in_buf->i_dts - held;
+    p_out_buf->i_pts        = p_in_buf->i_pts - held;
+    p_out_buf->i_length     = CLOCK_FREQ * p_out_buf->i_nb_samples
+                              / p_filter->fmt_out.audio.i_rate;
 
     block_Release( p_in_buf );
     return p_out_buf;
