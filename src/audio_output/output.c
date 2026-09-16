@@ -238,6 +238,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
     /* Audio output module initialization */
     aout->start = NULL;
     aout->stop = NULL;
+    aout->latency_get = NULL;
     aout->volume_set = NULL;
     aout->mute_set = NULL;
     aout->device_select = NULL;
