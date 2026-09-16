@@ -351,6 +351,14 @@ static int RefineSeek( demux_t *p_demux, vlc_tick_t i_time, double i_bytemicrora
         }
     }
 
+    /* The search consumed the frame it was after, and the packetizer needed
+     * the head of the one behind it to close it, so the stream is left a frame
+     * or two past the target. Put it back where the iteration that matched
+     * started reading: the next Demux() then delivers the frame the seek asked
+     * for instead of one the caller never gets to hear. */
+    if( b_found && vlc_stream_Seek( p_demux->s, i_start_pos ) != VLC_SUCCESS )
+        return VLC_EGENERIC;
+
     return b_found ? VLC_SUCCESS : VLC_EGENERIC;
 }
 
