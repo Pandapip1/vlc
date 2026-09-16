@@ -72,6 +72,7 @@ typedef struct
     struct
     {
         vlc_tick_t end; /**< Last seen PTS */
+        vlc_tick_t source_end; /**< Where the last block said its content ended */
         vlc_tick_t skip; /**< Material still to be jumped over */
         vlc_tick_t skip_settles; /**< When a jump can have taken effect */
         vlc_tick_t update; /**< When the correction was last updated */
@@ -85,6 +86,11 @@ typedef struct
     } sync;
 
     int initial_stereo_mode; /**< Initial stereo mode set by options */
+
+    /* The elementary stream feeding this output, so that a fault in its
+     * timeline can be reported against the stream it came from. */
+    vlc_fourcc_t source_codec;
+    int source_id;
 
     audio_sample_format_t input_format;
     audio_sample_format_t mixer_format;
@@ -153,7 +159,8 @@ bool aout_ChangeFilterString( vlc_object_t *manager, vlc_object_t *aout,
 #define AOUT_DEC_FAILED VLC_EGENERIC
 
 int aout_DecNew(audio_output_t *, const audio_sample_format_t *,
-                const audio_replay_gain_t *, const aout_request_vout_t *);
+                const es_format_t *source, const audio_replay_gain_t *,
+                const aout_request_vout_t *);
 void aout_DecDelete(audio_output_t *);
 int aout_DecPlay(audio_output_t *, block_t *, int i_input_rate);
 void aout_DecGetResetStats(audio_output_t *, unsigned *, unsigned *);

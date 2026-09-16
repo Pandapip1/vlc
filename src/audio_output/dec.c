@@ -42,6 +42,7 @@
  */
 int aout_DecNew( audio_output_t *p_aout,
                  const audio_sample_format_t *p_format,
+                 const es_format_t *p_source,
                  const audio_replay_gain_t *p_replay_gain,
                  const aout_request_vout_t *p_request_vout )
 {
@@ -80,6 +81,8 @@ int aout_DecNew( audio_output_t *p_aout,
     owner->volume = aout_volume_New (p_aout, p_replay_gain);
 
     atomic_store (&owner->restart, 0);
+    owner->source_codec = p_source->i_codec;
+    owner->source_id = p_source->i_id;
     owner->input_format = *p_format;
     owner->mixer_format = owner->input_format;
     owner->request_vout = *p_request_vout;
@@ -108,6 +111,7 @@ error:
 
 
     owner->sync.end = VLC_TICK_INVALID;
+    owner->sync.source_end = VLC_TICK_INVALID;
     owner->sync.discontinuity = true;
     owner->sync.skip = 0;
     owner->sync.skip_settles = 0;
@@ -178,6 +182,7 @@ static int aout_CheckReady (audio_output_t *aout)
 
         msg_Dbg (aout, "restarting filters...");
         owner->sync.end = VLC_TICK_INVALID;
+        owner->sync.source_end = VLC_TICK_INVALID;
         /* The new filters start with no correction, but the controller keeps
          * what it had learnt and puts it back on the next update. */
         owner->sync.update = VLC_TICK_INVALID;
@@ -267,6 +272,26 @@ static void aout_DecSilence (audio_output_t *aout, vlc_tick_t length, vlc_tick_t
     block->i_dts = pts;
     block->i_length = length;
     aout_OutputPlay (aout, block);
+}
+
+/**
+ * The step between where the last block said its content ended and where this
+ * one says it begins, or zero if they join up.
+ *
+ * A step is a position error introduced upstream - a hole at a loop seam, a
+ * dropped frame, a length the demuxer had to guess, a late wakeup - and it
+ * says nothing about the device's clock. Genuine drift is what accumulates
+ * between blocks that do join up; it never arrives all at once.
+ */
+static vlc_tick_t aout_DecTimelineStep (aout_owner_t *owner, vlc_tick_t pts)
+{
+    if (owner->sync.source_end == VLC_TICK_INVALID || owner->sync.discontinuity)
+        return 0;
+
+    const vlc_tick_t step = pts - owner->sync.source_end;
+
+    return (step > +AOUT_MAX_TIMELINE_SLOP || step < -AOUT_MAX_TIMELINE_SLOP)
+           ? step : 0;
 }
 
 static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
@@ -458,6 +483,30 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
     if (block->i_flags & BLOCK_FLAG_DISCONTINUITY)
         owner->sync.discontinuity = true;
 
+    /* Taken on the dates the decoder gives its blocks, before anything is
+     * filtered, resampled or skipped: the question is whether the source
+     * timeline joins up, not what the output then did with it. The length is
+     * the content's own, so it takes the playback rate to say how long the
+     * block occupies of the timeline the dates are on. */
+    const vlc_tick_t step = aout_DecTimelineStep (owner, block->i_pts);
+
+    owner->sync.source_end = block->i_pts
+        + block->i_length * input_rate / INPUT_RATE_DEFAULT;
+
+    if (unlikely(step != 0))
+    {
+        msg_Warn (aout, "%4.4s stream %d handed over %s of %"PRId64" us: "
+                  "correcting it here rather than detuning to it, but what "
+                  "made it is upstream", (const char *)&owner->source_codec,
+                  owner->source_id, (step > 0) ? "a hole" : "an overlap",
+                  (step > 0) ? step : -step);
+
+        /* Same treatment as a declared one: the offset either side of it is
+         * not drift, and it is put right where it is rather than worked off
+         * by running the whole stream off pitch. */
+        owner->sync.discontinuity = true;
+    }
+
     if (atomic_exchange(&owner->vp.update, false))
     {
         vlc_mutex_lock (&owner->vp.lock);
@@ -550,13 +599,13 @@ void aout_DecChangePause (audio_output_t *aout, bool paused, vlc_tick_t date)
     aout_owner_t *owner = aout_owner (aout);
 
     aout_OutputLock (aout);
+    /* A pause moves the dates of everything still to come by its length, so
+     * what has already been played has to be moved with them or the first
+     * block back would read as a hole the length of the pause. */
     if (owner->sync.end != VLC_TICK_INVALID)
-    {
-        if (paused)
-            owner->sync.end -= date;
-        else
-            owner->sync.end += date;
-    }
+        owner->sync.end += paused ? -date : date;
+    if (owner->sync.source_end != VLC_TICK_INVALID)
+        owner->sync.source_end += paused ? -date : date;
     if (owner->mixer_format.i_format)
     {
         aout_OutputPause (aout, paused, date);
@@ -573,6 +622,7 @@ void aout_DecFlush (audio_output_t *aout, bool wait)
 
     aout_OutputLock (aout);
     owner->sync.end = VLC_TICK_INVALID;
+    owner->sync.source_end = VLC_TICK_INVALID;
     if (owner->mixer_format.i_format)
     {
         if (wait)
