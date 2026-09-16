@@ -122,14 +122,15 @@ static int  Control( demux_t *, int, va_list );
 
 /* Bitstream manipulation */
 static int  Ogg_ReadPage     ( demux_t *, ogg_page * );
+static vlc_tick_t Ogg_PublishLastPCR( demux_t * );
 static void Ogg_UpdatePCR    ( demux_t *, logical_stream_t *, ogg_packet * );
 static void Ogg_DecodePacket ( demux_t *, logical_stream_t *, ogg_packet * );
 static unsigned Ogg_OpusPacketDuration( ogg_packet * );
 static void Ogg_SendOrQueueBlocks( demux_t *, logical_stream_t *, block_t * );
 
 static void Ogg_CreateES( demux_t *p_demux );
-static int Ogg_BeginningOfStream( demux_t *p_demux );
-static int Ogg_FindLogicalStreams( demux_t *p_demux );
+static int Ogg_BeginningOfStream( demux_t *p_demux, bool b_page_read );
+static int Ogg_FindLogicalStreams( demux_t *p_demux, bool b_page_read );
 static int Ogg_ConfigureStream( demux_t *p_demux, ogg_packet oggpacket, logical_stream_t * );
 static void Ogg_EndOfStream( demux_t *p_demux );
 
@@ -287,6 +288,7 @@ static int Demux( demux_t * p_demux )
     int         i_stream;
     bool b_skipping = false;
     bool b_canseek;
+    bool b_page_read = false;
 
     int i_active_streams = p_sys->i_streams;
     for ( int i=0; i < p_sys->i_streams; i++ )
@@ -297,61 +299,72 @@ static int Demux( demux_t * p_demux )
 
     if ( i_active_streams == 0 )
     {
-        vlc_tick_t i_lastpcr = VLC_TICK_INVALID;
+        bool b_newgroup = ( p_sys->i_streams == 0 );
 
         if ( p_sys->i_streams ) /* All finished */
         {
-            msg_Dbg( p_demux, "end of a group of %d logical streams", p_sys->i_streams );
+            vlc_tick_t i_lastpcr = Ogg_PublishLastPCR( p_demux );
 
-            for( i_stream = 0; i_stream < p_sys->i_streams; i_stream++ )
+            /* A group of logical streams ends where the next one begins, and
+             * nowhere else. Read the page that would begin it before giving
+             * anything up: at the plain end of the file there is no next
+             * group, and the handover below would throw away the streams,
+             * their headers and their index - everything a seek back over the
+             * end has to demux with, and everything it would have to find
+             * again from wherever the seek happens to land. */
+            if( Ogg_ReadPage( p_demux, &p_sys->current_page ) != VLC_SUCCESS )
+                return VLC_DEMUXER_EOF;
+            b_page_read = true;
+
+            if( ogg_page_bos( &p_sys->current_page ) )
             {
-                logical_stream_t *p_stream = p_sys->pp_stream[i_stream];
-                if( p_stream->i_pcr > i_lastpcr )
-                    i_lastpcr = p_stream->i_pcr;
+                b_newgroup = true;
+
+                msg_Dbg( p_demux, "end of a group of %d logical streams", p_sys->i_streams );
+
+                /* We keep the ES to try reusing it in Ogg_BeginningOfStream
+                 * only 1 ES is supported (common case for ogg web radio) */
+                if( p_sys->i_streams == 1 && p_sys->pp_stream[0]->p_es )
+                {
+                    if( p_sys->p_old_stream ) /* if no setupEs has reused */
+                        Ogg_LogicalStreamDelete( p_demux, p_sys->p_old_stream );
+                    p_sys->p_old_stream = p_sys->pp_stream[0];
+                    TAB_CLEAN( p_sys->i_streams, p_sys->pp_stream );
+                }
+
+                Ogg_EndOfStream( p_demux );
+                p_sys->b_chained_boundary = true;
+
+                /* The group just published its last pcr; the one chained onto
+                 * it carries on from there. */
+                if( i_lastpcr > VLC_TICK_INVALID )
+                    p_sys->i_nzpcr_offset = i_lastpcr - VLC_TICK_0;
+                p_sys->i_pcr = VLC_TICK_INVALID;
             }
-
-            /* We keep the ES to try reusing it in Ogg_BeginningOfStream
-             * only 1 ES is supported (common case for ogg web radio) */
-            if( p_sys->i_streams == 1 && p_sys->pp_stream[0]->p_es )
-            {
-                if( p_sys->p_old_stream ) /* if no setupEs has reused */
-                    Ogg_LogicalStreamDelete( p_demux, p_sys->p_old_stream );
-                p_sys->p_old_stream = p_sys->pp_stream[0];
-                TAB_CLEAN( p_sys->i_streams, p_sys->pp_stream );
-            }
-
-            Ogg_EndOfStream( p_demux );
-            p_sys->b_chained_boundary = true;
-
-            if( i_lastpcr > VLC_TICK_INVALID && likely( !p_sys->b_slave ) )
-                es_out_SetPCR( p_demux->out, i_lastpcr );
-            p_sys->i_pcr = VLC_TICK_INVALID;
+            /* A page that begins no stream is no boundary either: it belongs
+             * to the group that is already here, and the loop below takes the
+             * finished flag back off whatever stream it is for. */
         }
 
-        if( Ogg_BeginningOfStream( p_demux ) != VLC_SUCCESS )
-            return VLC_DEMUXER_EOF;
-
-        /* Only a group that a following one takes over from hands its
-         * timeline on. Committing the offset before knowing there is such a
-         * group leaves it behind at the end of the file, where the group that
-         * ended is the same group a seek back to the start reads again: the
-         * repeated pass would then come out a whole pass late and the item
-         * would never be heard from its beginning again. */
-        if( i_lastpcr > VLC_TICK_INVALID )
-            p_sys->i_nzpcr_offset = i_lastpcr - VLC_TICK_0;
-
-        msg_Dbg( p_demux, "beginning of a group of logical streams" );
-
-        if ( !p_sys->b_chained_boundary )
+        if ( b_newgroup )
         {
-            /* Find the real duration */
-            vlc_stream_Control( p_demux->s, STREAM_CAN_SEEK, &b_canseek );
-            if ( b_canseek )
-                Oggseek_ProbeEnd( p_demux );
-        }
-        else
-        {
-            p_sys->b_chained_boundary = false;
+            if( Ogg_BeginningOfStream( p_demux, b_page_read ) != VLC_SUCCESS )
+                return VLC_DEMUXER_EOF;
+            b_page_read = false;
+
+            msg_Dbg( p_demux, "beginning of a group of logical streams" );
+
+            if ( !p_sys->b_chained_boundary )
+            {
+                /* Find the real duration */
+                vlc_stream_Control( p_demux->s, STREAM_CAN_SEEK, &b_canseek );
+                if ( b_canseek )
+                    Oggseek_ProbeEnd( p_demux );
+            }
+            else
+            {
+                p_sys->b_chained_boundary = false;
+            }
         }
     }
 
@@ -375,9 +388,11 @@ static int Demux( demux_t * p_demux )
     if( !p_sys->b_page_waiting)
     {
         /*
-         * Demux an ogg page from the stream
+         * Demux an ogg page from the stream, unless the group boundary check
+         * above has already taken it.
          */
-        if( Ogg_ReadPage( p_demux, &p_sys->current_page ) != VLC_SUCCESS )
+        if( !b_page_read &&
+            Ogg_ReadPage( p_demux, &p_sys->current_page ) != VLC_SUCCESS )
             return VLC_DEMUXER_EOF; /* EOF */
         /* Test for End of Stream */
         if( ogg_page_eos( &p_sys->current_page ) )
@@ -708,6 +723,33 @@ static int Demux( demux_t * p_demux )
     }
 
     return VLC_DEMUXER_SUCCESS;
+}
+
+/* The eos page of a stream is read with that stream already flagged finished,
+ * so the pcr the loop at the end of Demux() settles on leaves the last page of
+ * the group out. Publish it where the group runs out, which is both what the
+ * chained handover used to do on its way past and what the end of the file
+ * needs, and return it so the handover can pin the next group to it. Asking
+ * for the end more than once must not publish it more than once. */
+static vlc_tick_t Ogg_PublishLastPCR( demux_t *p_demux )
+{
+    demux_sys_t *p_sys = p_demux->p_sys;
+    vlc_tick_t i_lastpcr = VLC_TICK_INVALID;
+
+    for( int i = 0; i < p_sys->i_streams; i++ )
+    {
+        if( p_sys->pp_stream[i]->i_pcr > i_lastpcr )
+            i_lastpcr = p_sys->pp_stream[i]->i_pcr;
+    }
+
+    if( i_lastpcr > p_sys->i_pcr )
+    {
+        p_sys->i_pcr = i_lastpcr;
+        if( likely( !p_sys->b_slave ) )
+            es_out_SetPCR( p_demux->out, i_lastpcr );
+    }
+
+    return i_lastpcr;
 }
 
 static void Ogg_ResetStream( logical_stream_t *p_stream )
@@ -1665,15 +1707,21 @@ failed:
     return NULL;
 }
 
-static int Ogg_FindLogicalStreams( demux_t *p_demux )
+/* b_page_read says the first page to look at is already in current_page,
+ * which is how the caller can tell a chained group apart from the end of the
+ * file without losing the page that told it. */
+static int Ogg_FindLogicalStreams( demux_t *p_demux, bool b_page_read )
 {
     demux_sys_t *p_ogg = p_demux->p_sys;
 
     p_ogg->i_total_bytes = stream_Size ( p_demux->s );
     msg_Dbg( p_demux, "File length is %"PRId64" bytes", p_ogg->i_total_bytes );
 
-    while( Ogg_ReadPage( p_demux, &p_ogg->current_page ) == VLC_SUCCESS )
+    while( b_page_read ||
+           Ogg_ReadPage( p_demux, &p_ogg->current_page ) == VLC_SUCCESS )
     {
+        b_page_read = false;
+
         /* All is wonderful in our fine fine little world.
          * We found the beginning of our first logical stream. */
         if( !ogg_page_bos( &p_ogg->current_page ) )
@@ -2283,14 +2331,14 @@ static void Ogg_CreateES( demux_t *p_demux )
  * Ogg_BeginningOfStream: Look for Beginning of Stream ogg pages and add
  *                        Elementary streams.
  ****************************************************************************/
-static int Ogg_BeginningOfStream( demux_t *p_demux )
+static int Ogg_BeginningOfStream( demux_t *p_demux, bool b_page_read )
 {
     demux_sys_t *p_ogg = p_demux->p_sys  ;
     int i_stream;
 
     /* Find the logical streams embedded in the physical stream and
      * initialize our p_ogg structure. */
-    if( Ogg_FindLogicalStreams( p_demux ) != VLC_SUCCESS )
+    if( Ogg_FindLogicalStreams( p_demux, b_page_read ) != VLC_SUCCESS )
     {
         msg_Warn( p_demux, "couldn't find any ogg logical stream" );
         return VLC_EGENERIC;
