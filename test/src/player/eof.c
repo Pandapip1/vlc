@@ -56,8 +56,9 @@ test_repeat(struct ctx *ctx)
     wait_state(ctx, VLC_PLAYER_STATE_PLAYING);
     wait_state(ctx, VLC_PLAYER_STATE_STOPPED);
 
-    /* Check buffering count match the repeat count */
-    assert(get_buffering_count(ctx) ==  repeat_count + 1 /* initial buffering */);
+    /* A repeat carries straight on: the clock, the decoders and the output are
+     * kept, so the only buffering is the one the item started with. */
+    assert(get_buffering_count(ctx) == 1);
 
     test_end(ctx);
 }

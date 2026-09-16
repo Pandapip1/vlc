@@ -780,6 +780,14 @@ static int PrivControlLocked(struct vlc_input_es_out *p_tsout,
         }
         return CmdExecutePrivControl(p_sys, &cmd.privcontrol);
     }
+    case ES_OUT_PRIV_SET_TIME_REPEAT:
+    {
+        if( !p_sys->b_delayed )
+            return es_out_in_PrivControl( p_sys->p_out, in, i_query );
+
+        msg_Err( p_sys->p_input, "EsOutTimeshift does not yet support repeat" );
+        return VLC_EGENERIC;
+    }
     case ES_OUT_PRIV_GET_WAKE_UP: /* TODO ? */
     {
         vlc_tick_t *pi_wakeup = va_arg( args, vlc_tick_t* );

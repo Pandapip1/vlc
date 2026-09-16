@@ -495,11 +495,14 @@ static int ResetPosition( input_thread_t *p_input )
     input_thread_private_t *priv = input_priv(p_input);
     StartTitle( p_input, true );
 
-    /* Reset the decoder states and the clock sync, as a seek does, then seek
-     * to the start position. Done here rather than by queueing a seek control,
-     * so that a refusal is known to the caller: the end of stream has already
-     * been reported as handled on the strength of this reposition. */
-    es_out_Control( &priv->p_es_out->out, ES_OUT_RESET_PCR );
+    /* Reposition as a seek does, then seek to the start position. Done here
+     * rather than by queueing a seek control, so that a refusal is known to
+     * the caller: the end of stream has already been reported as handled on
+     * the strength of this reposition.
+     *
+     * Not the ordinary reposition: a repeat carries straight on, so what is
+     * already decoded is kept and the clock reference is left alone. */
+    es_out_SetTimeRepeat( priv->p_es_out );
     ResetFramePrevious( p_input );
     priv->next_frame_need_data = false;
 

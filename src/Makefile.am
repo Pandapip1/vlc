@@ -319,6 +319,7 @@ libvlccore_la_SOURCES = \
 	input/decoder_prevframe.h \
 	input/demux.h \
 	input/es_out.h \
+	input/es_out_repeat.h \
 	input/event.h \
 	input/item.h \
 	input/mrl_helpers.h \

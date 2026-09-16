@@ -50,6 +50,7 @@
 #include "../clock/clock.h"
 #include "decoder.h"
 #include "es_out.h"
+#include "es_out_repeat.h"
 #include "event.h"
 #include "resource.h"
 #include "info.h"
@@ -88,6 +89,8 @@ typedef struct
     enum vlc_clock_master_source active_clock_source;
 
     vlc_tick_t i_last_pcr;
+    vlc_tick_t i_pcr_step; /* the interval this demuxer reads pcrs at */
+    vlc_tick_t i_last_end; /* how far along the timeline data has been sent */
 
     vlc_meta_t *p_meta;
     struct vlc_list node;
@@ -145,6 +148,7 @@ struct es_out_id_t
     bool master;
 
     vlc_tick_t i_pts_level;
+    vlc_tick_t i_prev_date; /* date of the block before this one */
     vlc_tick_t delay;
 
     /* Fields for ES created by decoders */
@@ -233,6 +237,10 @@ typedef struct
     vlc_tick_t  i_buffering_extra_system;
     bool        b_draining;
 
+    /* Repeat in place */
+    bool        b_repeat_pending; /* waiting for the first date of the new pass */
+    vlc_tick_t  i_repeat_offset; /* what the demuxer dates are short of the timeline */
+
     /* Record */
     sout_stream_t *p_sout_record;
 
@@ -260,7 +268,8 @@ static void EsOutDeleteInfoEs(es_out_sys_t *, es_out_id_t *es);
 static void EsOutUnselectEs(es_out_sys_t *out, es_out_id_t *es, bool b_update);
 static void EsOutDecoderChangeDelay(es_out_sys_t *out, es_out_id_t *p_es);
 static void EsOutDecodersChangePause(es_out_sys_t *out, bool b_paused, vlc_tick_t i_date);
-static void EsOutChangePosition(es_out_sys_t *out, es_out_id_t *p_next_frame_es);
+static void EsOutChangePosition(es_out_sys_t *out, es_out_id_t *p_next_frame_es,
+                                bool b_flush);
 static void EsOutProgramChangePause(es_out_sys_t *out, bool b_paused, vlc_tick_t i_date);
 static void EsOutProgramsChangeRate(es_out_sys_t *out);
 static void EsOutDecodersStopBuffering(es_out_sys_t *out, bool b_forced);
@@ -1015,7 +1024,7 @@ static void EsOutResumeFromNextFrame(es_out_sys_t *p_sys)
 {
     assert( p_sys->p_next_frame_es != NULL );
     /* Flush every ES except the video one */
-    EsOutChangePosition(p_sys, EsOutStopNextFrame(p_sys));
+    EsOutChangePosition(p_sys, EsOutStopNextFrame(p_sys), true);
 }
 
 static void EsOutChangePause(es_out_sys_t *p_sys, bool b_paused, vlc_tick_t i_date)
@@ -1073,7 +1082,8 @@ static void EsOutChangeRate(es_out_sys_t *p_sys, float rate)
 }
 
 static void EsOutChangePosition(es_out_sys_t *p_sys,
-                                es_out_id_t *p_next_frame_es)
+                                es_out_id_t *p_next_frame_es,
+                                bool b_flush)
 {
     es_out_id_t *p_es;
 
@@ -1081,7 +1091,12 @@ static void EsOutChangePosition(es_out_sys_t *p_sys,
 
     foreach_es_then_es_slaves(p_es)
     {
-        if( p_es->p_dec != NULL )
+        /* A repeat has nothing to discard: what is already decoded is the
+         * tail of the pass still playing, and is what covers the gap while
+         * the demuxer starts over. Flushing it empties the audio output, and
+         * a sink left to run dry is parked and has to be resumed, which is
+         * audible. */
+        if( p_es->p_dec != NULL && b_flush )
         {
             if( p_es != p_next_frame_es )
                 vlc_input_decoder_Flush( p_es->p_dec );
@@ -1092,31 +1107,93 @@ static void EsOutChangePosition(es_out_sys_t *p_sys,
                     vlc_input_decoder_StartWait( p_es->p_dec_record );
             }
         }
-        p_es->i_pts_level = VLC_TICK_INVALID;
-    }
-
-    es_out_pgrm_t *pgrm;
-    vlc_list_foreach(pgrm, &p_sys->programs, node)
-    {
-        input_clock_Reset(pgrm->p_input_clock);
-        if (pgrm->clocks.input != NULL)
+        if( b_flush )
         {
-            vlc_clock_Lock(pgrm->clocks.input);
-            pgrm->i_last_pcr = VLC_TICK_INVALID;
-            vlc_clock_Reset(pgrm->clocks.input);
-            vlc_clock_Unlock(pgrm->clocks.input);
+            p_es->i_pts_level = VLC_TICK_INVALID;
+            p_es->i_prev_date = VLC_TICK_INVALID;
         }
     }
 
-    p_sys->b_buffering = true;
-    p_sys->i_buffering_extra_initial = 0;
-    p_sys->i_buffering_extra_stream = 0;
-    p_sys->i_buffering_extra_system = 0;
+    /* A repeat carries the timeline straight on: the demuxer starts over, but
+     * the dates es_out hands on continue from where the last pass ended, so
+     * the reference still describes them. Resetting it would convert the new
+     * pass to dates that have already gone by, which the output calls lateness
+     * and answers by flushing - throwing away the very data kept above. */
+    if( b_flush )
+    {
+        es_out_pgrm_t *pgrm;
+        vlc_list_foreach(pgrm, &p_sys->programs, node)
+        {
+            input_clock_Reset(pgrm->p_input_clock);
+            pgrm->i_pcr_step = 0;
+            pgrm->i_last_end = VLC_TICK_INVALID;
+            if (pgrm->clocks.input != NULL)
+            {
+                vlc_clock_Lock(pgrm->clocks.input);
+                pgrm->i_last_pcr = VLC_TICK_INVALID;
+                vlc_clock_Reset(pgrm->clocks.input);
+                vlc_clock_Unlock(pgrm->clocks.input);
+            }
+        }
+
+        /* A new reference is taken from whatever the demuxer emits next, so
+         * there is no timeline left to hold on to. */
+        p_sys->b_repeat_pending = false;
+        p_sys->i_repeat_offset = 0;
+
+        p_sys->b_buffering = true;
+        p_sys->i_buffering_extra_initial = 0;
+        p_sys->i_buffering_extra_stream = 0;
+        p_sys->i_buffering_extra_system = 0;
+        p_sys->i_prev_stream_level = -1;
+    }
     p_sys->b_draining = false;
     p_sys->i_preroll_end = -1;
-    p_sys->i_prev_stream_level = -1;
 }
 
+
+/*****************************************************************************
+ * EsOutRepeatShift: hold the timeline together across a repeat
+ *****************************************************************************
+ * Repeating an item in place seeks the demuxer back to the start but keeps the
+ * clock reference, the decoders and the audio output, and the dates of the new
+ * pass are converted with that reference. That only works while those dates
+ * carry on from where the last pass stopped.
+ *
+ * A demuxer is free either way: one whose date accumulator is simply left
+ * counting carries the timeline itself, while one that re-derives its date
+ * from the byte position - which is what it must do to answer a seek
+ * correctly - starts over from zero, and the reference would convert that to
+ * system dates that have long gone by.
+ *
+ * So do not depend on it. Measure, on the first date of the new pass, how far
+ * short of the timeline the demuxer has fallen, and carry that difference for
+ * as long as the pass lasts. A demuxer that carried the timeline itself
+ * measures nothing and is left alone.
+ *****************************************************************************/
+static void EsOutRepeatShift(es_out_sys_t *p_sys, es_out_pgrm_t *p_pgrm,
+                             vlc_tick_t i_date)
+{
+    p_sys->b_repeat_pending = false;
+
+    if( p_pgrm == NULL || p_pgrm->i_last_pcr == VLC_TICK_INVALID )
+        return;
+
+    const vlc_tick_t i_timeline = i_date + p_sys->i_repeat_offset;
+    if( i_timeline >= p_pgrm->i_last_pcr )
+        return; /* the demuxer carried the timeline across the seek */
+
+    /* Where the last pass stopped: see es_out_RepeatResume(). */
+    const vlc_tick_t i_resume = es_out_RepeatResume( p_pgrm->i_last_end,
+                                                     p_pgrm->i_last_pcr,
+                                                     p_pgrm->i_pcr_step );
+
+    p_sys->i_repeat_offset += i_resume - i_timeline;
+
+    msg_Dbg( p_sys->p_input, "repeat: the demuxer restarted its timeline, "
+             "carrying it on %"PRId64" ms further",
+             MS_FROM_VLC_TICK(p_sys->i_repeat_offset) );
+}
 static void EsOutStopFreeVout(es_out_sys_t *p_sys)
 {
     /* Clean up vout after user action (in active mode only). */
@@ -1153,7 +1230,7 @@ static void EsOutDecodersStopBuffering(es_out_sys_t *p_sys, bool b_forced)
     if (i_stream_duration < 0)
     {
         EsOutStopNextFrame(p_sys);
-        EsOutChangePosition(p_sys, NULL);
+        EsOutChangePosition(p_sys, NULL, true);
         return;
     }
 
@@ -1713,6 +1790,8 @@ static es_out_pgrm_t *EsOutProgramAdd(es_out_sys_t *p_sys, input_source_t *sourc
     p_pgrm->b_selected = false;
     p_pgrm->b_scrambled = false;
     p_pgrm->i_last_pcr = VLC_TICK_INVALID;
+    p_pgrm->i_pcr_step = 0;
+    p_pgrm->i_last_end = VLC_TICK_INVALID;
     p_pgrm->p_meta = NULL;
     p_pgrm->p_master_es_clock = NULL;
     p_pgrm->active_clock_source = VLC_CLOCK_MASTER_AUTO;
@@ -2437,6 +2516,7 @@ static es_out_id_t *EsOutAddLocked(es_out_sys_t *p_sys,
     es->mouse_event_userdata = es;
     es->mouse_being_dragged = false;
     es->i_pts_level = VLC_TICK_INVALID;
+    es->i_prev_date = VLC_TICK_INVALID;
     es->delay = VLC_TICK_MAX;
 
     vlc_list_append(&es->node, es->p_master ? &p_sys->es_slaves : &p_sys->es);
@@ -3142,6 +3222,47 @@ static int EsOutSend(es_out_t *out, es_out_id_t *es, block_t *p_block )
     vlc_mutex_lock( &p_sys->lock );
     assert( !p_sys->b_draining );
 
+    /* Put the block on the timeline the clock reference describes; a demuxer
+     * that restarted its dates on the repeat seek is carried on from where the
+     * last pass stopped. The pcr of the new pass has normally settled that
+     * already, but a demuxer is free to send data before its first pcr. */
+    if( unlikely(p_sys->b_repeat_pending) )
+    {
+        const vlc_tick_t i_date = p_block->i_dts != VLC_TICK_INVALID ?
+                                  p_block->i_dts : p_block->i_pts;
+        if( i_date != VLC_TICK_INVALID )
+            EsOutRepeatShift( p_sys, es->p_pgrm, i_date );
+    }
+    if( p_sys->i_repeat_offset != 0 )
+    {
+        if( p_block->i_dts != VLC_TICK_INVALID )
+            p_block->i_dts += p_sys->i_repeat_offset;
+        if( p_block->i_pts != VLC_TICK_INVALID )
+            p_block->i_pts += p_sys->i_repeat_offset;
+    }
+
+    /* How far along the timeline data has been handed over, which is where a
+     * repeat has to carry the next pass on from. Plenty of demuxers date a
+     * block without saying how long it is; the step from the block before it
+     * is the same thing measured a block late. */
+    if( es->p_pgrm != NULL )
+    {
+        const vlc_tick_t i_date = p_block->i_dts != VLC_TICK_INVALID ?
+                                  p_block->i_dts : p_block->i_pts;
+        if( i_date != VLC_TICK_INVALID )
+        {
+            vlc_tick_t i_len = p_block->i_length;
+
+            if( i_len <= 0 && es->i_prev_date != VLC_TICK_INVALID
+             && i_date > es->i_prev_date )
+                i_len = i_date - es->i_prev_date;
+
+            if( i_date + i_len > es->p_pgrm->i_last_end )
+                es->p_pgrm->i_last_end = i_date + i_len;
+            es->i_prev_date = i_date;
+        }
+    }
+
     /* Shift all slaves timestamps with the main source normal time. This will
      * allow to synchronize 2 demuxers with different time bases. Remove the
      * normal time from the current source and add the main source normal time.
@@ -3615,6 +3736,14 @@ static int EsOutVaControlLocked(es_out_sys_t *p_sys, input_source_t *source,
             return VLC_EGENERIC;
         }
 
+        /* Carry a demuxer that restarted its dates on a repeat seek on from
+         * where the last pass stopped. */
+        if( unlikely(p_sys->b_repeat_pending) )
+            EsOutRepeatShift( p_sys, p_pgrm, i_pcr );
+        i_pcr += p_sys->i_repeat_offset;
+
+        if( p_pgrm->i_last_pcr != VLC_TICK_INVALID && i_pcr > p_pgrm->i_last_pcr )
+            p_pgrm->i_pcr_step = i_pcr - p_pgrm->i_last_pcr;
         p_pgrm->i_last_pcr = i_pcr;
 
         struct vlc_tracer *tracer = vlc_object_get_tracer( &p_sys->p_input->obj );
@@ -3729,7 +3858,7 @@ static int EsOutVaControlLocked(es_out_sys_t *p_sys, input_source_t *source,
     case ES_OUT_RESET_PCR:
         msg_Dbg( p_sys->p_input, "ES_OUT_RESET_PCR called" );
         EsOutStopNextFrame(p_sys);
-        EsOutChangePosition(p_sys, NULL);
+        EsOutChangePosition(p_sys, NULL, true);
         return VLC_SUCCESS;
 
     case ES_OUT_SET_GROUP:
@@ -3803,7 +3932,7 @@ static int EsOutVaControlLocked(es_out_sys_t *p_sys, input_source_t *source,
         if( i_date < 0 )
             return VLC_EGENERIC;
 
-        p_sys->i_preroll_end = i_date;
+        p_sys->i_preroll_end = i_date + p_sys->i_repeat_offset;
 
         return VLC_SUCCESS;
     }
@@ -4152,7 +4281,7 @@ static int EsOutVaPrivControlLocked(es_out_sys_t *p_sys, input_source_t *source,
                            p_sys->i_cr_average);
         }
 
-        EsOutChangePosition( p_sys, NULL );
+        EsOutChangePosition( p_sys, NULL, true );
         return VLC_SUCCESS;
     }
     case ES_OUT_PRIV_SET_FRAME_NEXT:
@@ -4223,6 +4352,16 @@ static int EsOutVaPrivControlLocked(es_out_sys_t *p_sys, input_source_t *source,
     case ES_OUT_PRIV_SET_EOS:
     {
         EsOutDrain(p_sys);
+        return VLC_SUCCESS;
+    }
+    case ES_OUT_PRIV_SET_TIME_REPEAT:
+    {
+        /* Like ES_OUT_RESET_PCR, but for a seek back to the start that repeats
+         * the item: keeping what is already decoded is what makes the loop
+         * inaudible. */
+        EsOutStopNextFrame(p_sys);
+        EsOutChangePosition(p_sys, NULL, false);
+        p_sys->b_repeat_pending = true;
         return VLC_SUCCESS;
     }
     case ES_OUT_PRIV_SET_VBI_PAGE:
@@ -4365,6 +4504,8 @@ input_EsOutNew(input_thread_t *p_input, input_source_t *main_source, float rate,
                                      = p_sys->i_buffering_extra_system
                                      = VLC_TICK_INVALID;
     p_sys->b_draining = false;
+    p_sys->b_repeat_pending = false;
+    p_sys->i_repeat_offset = 0;
     p_sys->p_sout_record = NULL;
     p_sys->i_preroll_end = -1;
     p_sys->i_prev_stream_level = -1;

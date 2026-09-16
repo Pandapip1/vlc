@@ -107,7 +107,12 @@ enum es_out_query_private_e
     ES_OUT_PRIV_SET_VBI_PAGE,                       /* arg1=unsigned res=can fail */
 
     /* Set VBI/Teletext menu transparent */
-    ES_OUT_PRIV_SET_VBI_TRANSPARENCY                /* arg1=bool res=can fail */
+    ES_OUT_PRIV_SET_VBI_TRANSPARENCY,               /* arg1=bool res=can fail */
+
+    /* Reposition for a repeat of the item, which unlike an ordinary seek
+     * carries straight on: what is already decoded is the tail of the pass
+     * still playing and is what covers the loop. */
+    ES_OUT_PRIV_SET_TIME_REPEAT                     /* no arg                   res=cannot fail */
 };
 
 struct vlc_input_es_out;
@@ -312,6 +317,13 @@ static inline void
 es_out_Eos(struct vlc_input_es_out *out)
 {
     int i_ret = es_out_PrivControl(out, ES_OUT_PRIV_SET_EOS);
+    assert( !i_ret );
+}
+
+static inline void
+es_out_SetTimeRepeat(struct vlc_input_es_out *out)
+{
+    int i_ret = es_out_PrivControl(out, ES_OUT_PRIV_SET_TIME_REPEAT);
     assert( !i_ret );
 }
 
