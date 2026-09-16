@@ -42,6 +42,13 @@
 #include <unistd.h> /* fsync() */
 #include <pthread.h>
 #include <sched.h>
+#include <sys/resource.h>
+
+#if defined (_POSIX_PRIORITY_SCHEDULING) && (_POSIX_PRIORITY_SCHEDULING >= 0) \
+ && defined (_POSIX_THREAD_PRIORITY_SCHEDULING) \
+ && (_POSIX_THREAD_PRIORITY_SCHEDULING >= 0)
+# define VLC_RT_SCHEDULING 1
+#endif
 
 #ifdef HAVE_EXECINFO_H
 # include <execinfo.h>
@@ -387,8 +394,71 @@ void *vlc_threadvar_get (vlc_threadvar_t key)
     return pthread_getspecific (key);
 }
 
+#ifdef VLC_RT_SCHEDULING
 static bool rt_priorities = false;
 static int rt_offset;
+static int rt_max; /* the highest real-time priority we may ask for */
+
+/* Turn one of the VLC_THREAD_PRIORITY_* values into a policy and a priority,
+ * never above what this process is allowed to ask for. */
+static int vlc_sched_param (int priority, struct sched_param *restrict sp)
+{
+    int policy;
+
+    sp->sched_priority = priority + rt_offset;
+
+    if (sp->sched_priority <= 0)
+        sp->sched_priority += sched_get_priority_max (policy = SCHED_OTHER);
+    else
+    {
+        sp->sched_priority += sched_get_priority_min (policy = SCHED_RR);
+
+        if (sp->sched_priority > rt_max)
+            sp->sched_priority = rt_max;
+    }
+
+    return policy;
+}
+
+/* Whether the kernel will grant this process a real-time priority at all.
+ * Asked rather than inferred: RLIMIT_RTPRIO is not the only way to have it,
+ * CAP_SYS_NICE and running as root both work with the limit at zero. */
+static bool vlc_can_schedule_rt (void)
+{
+    struct sched_param sp = {
+        .sched_priority = sched_get_priority_min (SCHED_RR),
+    }, old_sp;
+    int old_policy;
+
+    if (pthread_getschedparam (pthread_self (), &old_policy, &old_sp) != 0
+     || pthread_setschedparam (pthread_self (), SCHED_RR, &sp) != 0)
+        return false;
+
+    pthread_setschedparam (pthread_self (), old_policy, &old_sp);
+    return true;
+}
+
+/* A real-time thread that stops yielding locks a processor out for as long
+ * as it runs. RLIMIT_RTTIME is the kernel's answer to that: a thread that
+ * holds a processor for this long without blocking is signalled. A second
+ * of that is nothing an audio thread does, and killing the process beats
+ * wedging the machine. Only lowered from infinity, so a figure someone set
+ * deliberately is left alone. */
+static void vlc_bound_rt_runtime (void)
+{
+    struct rlimit rl;
+
+#ifdef RLIMIT_RTTIME
+    if (getrlimit (RLIMIT_RTTIME, &rl) != 0 || rl.rlim_cur != RLIM_INFINITY)
+        return;
+
+    rl.rlim_cur = 1000000;
+    setrlimit (RLIMIT_RTTIME, &rl);
+#else
+    (void) rl;
+#endif
+}
+#endif
 
 void vlc_threads_setup (libvlc_int_t *p_libvlc)
 {
@@ -400,11 +470,32 @@ void vlc_threads_setup (libvlc_int_t *p_libvlc)
      * just once per process. */
     if (!initialized)
     {
+#ifdef VLC_RT_SCHEDULING
         if (var_InheritBool (p_libvlc, "rt-priority"))
         {
+            struct rlimit rl;
+
             rt_offset = var_InheritInteger (p_libvlc, "rt-offset");
-            rt_priorities = true;
+            rt_max = sched_get_priority_max (SCHED_RR);
+
+#ifdef RLIMIT_RTPRIO
+            if (getrlimit (RLIMIT_RTPRIO, &rl) == 0
+             && rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur > 0
+             && (int)rl.rlim_cur < rt_max)
+                rt_max = rl.rlim_cur;
+#else
+            (void) rl;
+#endif
+
+            rt_priorities = vlc_can_schedule_rt ();
+
+            if (rt_priorities)
+                vlc_bound_rt_runtime ();
+            else
+                msg_Dbg (p_libvlc, "real-time scheduling not permitted, "
+                         "running at the default priority");
         }
+#endif
         initialized = true;
     }
     vlc_mutex_unlock (&lock);
@@ -439,18 +530,11 @@ static int vlc_clone_attr (vlc_thread_t *th, pthread_attr_t *attr,
         pthread_sigmask (SIG_BLOCK, &set, &oldset);
     }
 
-#if defined (_POSIX_PRIORITY_SCHEDULING) && (_POSIX_PRIORITY_SCHEDULING >= 0) \
- && defined (_POSIX_THREAD_PRIORITY_SCHEDULING) \
- && (_POSIX_THREAD_PRIORITY_SCHEDULING >= 0)
+#ifdef VLC_RT_SCHEDULING
     if (rt_priorities)
     {
-        struct sched_param sp = { .sched_priority = priority + rt_offset, };
-        int policy;
-
-        if (sp.sched_priority <= 0)
-            sp.sched_priority += sched_get_priority_max (policy = SCHED_OTHER);
-        else
-            sp.sched_priority += sched_get_priority_min (policy = SCHED_RR);
+        struct sched_param sp;
+        int policy = vlc_sched_param (priority, &sp);
 
         pthread_attr_setschedpolicy (attr, policy);
         pthread_attr_setschedparam (attr, &sp);
@@ -480,6 +564,14 @@ static int vlc_clone_attr (vlc_thread_t *th, pthread_attr_t *attr,
 #endif
 
     ret = pthread_create(&th->handle, attr, entry, data);
+#ifdef VLC_RT_SCHEDULING
+    if (ret == EPERM && rt_priorities)
+    {   /* The kernel refused the priority, not the thread. Playing at the
+         * default priority beats not playing. */
+        pthread_attr_setinheritsched (attr, PTHREAD_INHERIT_SCHED);
+        ret = pthread_create(&th->handle, attr, entry, data);
+    }
+#endif
     pthread_sigmask (SIG_SETMASK, &oldset, NULL);
     pthread_attr_destroy (attr);
     return ret;
@@ -559,18 +651,11 @@ unsigned long vlc_thread_id (void)
 
 int vlc_set_priority (vlc_thread_t th, int priority)
 {
-#if defined (_POSIX_PRIORITY_SCHEDULING) && (_POSIX_PRIORITY_SCHEDULING >= 0) \
- && defined (_POSIX_THREAD_PRIORITY_SCHEDULING) \
- && (_POSIX_THREAD_PRIORITY_SCHEDULING >= 0)
+#ifdef VLC_RT_SCHEDULING
     if (rt_priorities)
     {
-        struct sched_param sp = { .sched_priority = priority + rt_offset, };
-        int policy;
-
-        if (sp.sched_priority <= 0)
-            sp.sched_priority += sched_get_priority_max (policy = SCHED_OTHER);
-        else
-            sp.sched_priority += sched_get_priority_min (policy = SCHED_RR);
+        struct sched_param sp;
+        int policy = vlc_sched_param (priority, &sp);
 
         if (pthread_setschedparam(th.handle, policy, &sp))
             return VLC_EGENERIC;
