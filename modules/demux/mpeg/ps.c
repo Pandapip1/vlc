@@ -95,6 +95,9 @@ struct demux_sys_t
     int64_t     i_length;
     int         i_time_track_index;
     int64_t     i_current_pts;
+    vlc_tick_t  i_first_dts; /* first date handed over, for the whole stream */
+    vlc_tick_t  i_last_dts;  /* last date handed over */
+    vlc_tick_t  i_last_pcr;  /* last pcr reported */
     uint64_t    i_start_byte;
     uint64_t    i_lastpack_byte;
 
@@ -214,6 +217,9 @@ static int OpenCommon( vlc_object_t *p_this, bool b_force )
     p_sys->i_scr_track_id = 0;
     p_sys->i_length   = i_length;
     p_sys->i_current_pts = (vlc_tick_t) 0;
+    p_sys->i_first_dts = VLC_TICK_INVALID;
+    p_sys->i_last_dts = VLC_TICK_INVALID;
+    p_sys->i_last_pcr = VLC_TICK_INVALID;
     p_sys->i_time_track_index = -1;
     p_sys->i_aob_mlp_count = 0;
     p_sys->i_start_byte = i_skip;
@@ -404,6 +410,37 @@ static void NotifyDiscontinuity( ps_track_t *p_tk, es_out_t *out )
     }
 }
 
+/* A pack scr says when the pack reaches the decoder, not when what is in it
+ * is heard, and a mux puts the whole of its buffering model between the two:
+ * half a second at the head of a program stream ffmpeg wrote, a sixth of that
+ * by the end of it. Reported as it stands, the demuxer describes a pass that
+ * begins before its own first frame and ends before its own last one, and by
+ * different amounts - so a repeat, which has to place the next pass where this
+ * one stopped, reads the difference between the two as content and leaves a
+ * hole of it at every loop.
+ *
+ * Keep the scr, which is what paces the read, but never claim to be anywhere
+ * the data has not reached: not before the first date handed over, and, once
+ * there is no more to hand over, not short of the last one either. */
+static void SetPCR( demux_t *p_demux, vlc_tick_t i_pcr )
+{
+    demux_sys_t *p_sys = p_demux->p_sys;
+
+    if( p_sys->i_first_dts > VLC_TICK_INVALID && i_pcr < p_sys->i_first_dts )
+        i_pcr = p_sys->i_first_dts;
+
+    p_sys->i_last_pcr = i_pcr;
+    es_out_SetPCR( p_demux->out, i_pcr );
+}
+
+static void SetEndPCR( demux_t *p_demux )
+{
+    demux_sys_t *p_sys = p_demux->p_sys;
+
+    if( p_sys->i_last_dts > p_sys->i_last_pcr )
+        SetPCR( p_demux, p_sys->i_last_dts );
+}
+
 static void CheckPCR( demux_sys_t *p_sys, es_out_t *out, vlc_tick_t i_scr )
 {
     if( p_sys->i_scr > VLC_TICK_INVALID &&
@@ -423,6 +460,7 @@ static int Demux( demux_t *p_demux )
     i_ret = ps_pkt_resynch( p_demux->s, p_sys->format, p_sys->b_have_pack );
     if( i_ret < 0 )
     {
+        SetEndPCR( p_demux );
         return VLC_DEMUXER_EOF;
     }
     else if( i_ret == 0 )
@@ -449,6 +487,7 @@ static int Demux( demux_t *p_demux )
 
     if( ( p_pkt = ps_pkt_read( p_demux->s ) ) == NULL )
     {
+        SetEndPCR( p_demux );
         return VLC_DEMUXER_EOF;
     }
 
@@ -594,7 +633,7 @@ static int Demux( demux_t *p_demux )
                     p_sys->i_first_scr = -1;
                 }
                 else
-                    es_out_SetPCR( p_demux->out, VLC_TICK_0 + p_sys->i_pack_scr );
+                    SetPCR( p_demux, VLC_TICK_0 + p_sys->i_pack_scr );
             }
 
             if( tk->b_configured && tk->es &&
@@ -627,7 +666,7 @@ static int Demux( demux_t *p_demux )
                     p_sys->i_scr = p_pkt->i_pts;
                     if( p_sys->i_first_scr == -1 )
                         p_sys->i_first_scr = p_sys->i_scr;
-                    es_out_SetPCR( p_demux->out, p_pkt->i_pts );
+                    SetPCR( p_demux, p_pkt->i_pts );
                 }
 
                 if( tk->fmt.i_codec == VLC_CODEC_TELETEXT &&
@@ -655,6 +694,19 @@ static int Demux( demux_t *p_demux )
                     p_pkt->i_buffer -= 14;
                 }
 #endif
+                if( tk->fmt.i_cat == AUDIO_ES || tk->fmt.i_cat == VIDEO_ES )
+                {
+                    const vlc_tick_t i_dts = (p_pkt->i_dts > VLC_TICK_INVALID)
+                                           ? p_pkt->i_dts : p_pkt->i_pts;
+                    if( i_dts > VLC_TICK_INVALID )
+                    {
+                        if( p_sys->i_first_dts <= VLC_TICK_INVALID )
+                            p_sys->i_first_dts = i_dts;
+                        if( i_dts > p_sys->i_last_dts )
+                            p_sys->i_last_dts = i_dts;
+                    }
+                }
+
                 es_out_Send( p_demux->out, tk->es, p_pkt );
             }
             else
@@ -706,6 +758,8 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             i64 = stream_Size( p_demux->s ) - p_sys->i_start_byte;
             p_sys->i_current_pts = 0;
             p_sys->i_scr = -1;
+            p_sys->i_last_dts = VLC_TICK_INVALID;
+            p_sys->i_last_pcr = VLC_TICK_INVALID;
 
             if( p_sys->format == CDXA_PS )
             {
