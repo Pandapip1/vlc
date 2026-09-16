@@ -671,6 +671,36 @@ int main( int argc, char *argv[] )
         }
     }
 
+    /* The same scale, arrived at again and again. Two rates a thousandth
+     * apart are the same speed to within the margin below, so whatever the
+     * ledger reads here is the cost of the change itself and not of the rate
+     * that was asked for. */
+    {
+        struct run r = { .name = "scale-churn", .rate = 2.f, .mrl = path,
+                         .cap = { .ramp = true } };
+
+        for( unsigned i = 0; i < 48; i++ )
+        {
+            r.steps[r.nsteps].at = VLC_TICK_FROM_MS( 60 * ( i + 1 ) );
+            r.steps[r.nsteps].kind = STEP_RATE;
+            r.steps[r.nsteps].arg = ( i % 2 ) ? 2000 : 1996;
+            r.nsteps++;
+        }
+        r.run_for = VLC_TICK_FROM_MS(200);
+        RunOne( &r );
+        Report( &r );
+
+        uint64_t frames = 0;
+        unsigned from = Settle( &r, 0, VLC_TICK_FROM_MS(300) );
+        double speed = Ledger( &r, from, r.cap.nblocks, &frames );
+
+        fprintf( stderr, "%s: %u rate changes, %" PRIu64 " frames out, "
+                 "played at %.4fx\n", r.name, r.nsteps, frames, speed );
+        if( frames > 0 && ( speed < 1.99 || speed > 2.01 ) )
+            complain( &r, "48 changes between 1.996x and 2x played at %.4fx",
+                      speed );
+    }
+
     unlink( path );
     return fail;
 }
