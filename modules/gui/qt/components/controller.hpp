@@ -330,6 +330,9 @@ private:
 
     bool isWideFSC;
     int i_sensitivity;
+
+#ifdef QT_HAS_WAYLAND
+#endif
 };
 
 #endif

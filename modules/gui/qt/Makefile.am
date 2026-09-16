@@ -34,6 +34,12 @@ endif
 if HAVE_XCB
 libqt_plugin_la_CXXFLAGS += -DQT_HAS_XCB
 endif
+if HAVE_WAYLAND
+libqt_plugin_la_CPPFLAGS += -DQT_HAS_WAYLAND \
+	-DQPNI_HEADER=\<$(QT_VERSION)/QtGui/qpa/qplatformnativeinterface.h\>
+libqt_plugin_la_CXXFLAGS += $(WAYLAND_CLIENT_CFLAGS)
+libqt_plugin_la_LIBADD += $(WAYLAND_CLIENT_LIBS)
+endif
 if HAVE_WIN32
 libqt_plugin_la_LIBADD += $(LIBCOM) -lcomctl32 -luuid
 endif

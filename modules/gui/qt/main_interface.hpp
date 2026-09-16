@@ -184,6 +184,9 @@ protected:
     bool                 b_pauseOnMinimize;
     bool                 b_maximizedView;
     bool                 b_isWindowTiled;
+#ifdef QT_HAS_WAYLAND
+    bool                 b_hasWayland;
+#endif
     /* States */
     bool                 playlistVisible;       ///< Is the playlist visible ?
 //    bool                 videoIsActive;       ///< Having a video now / THEMIM->hasV
