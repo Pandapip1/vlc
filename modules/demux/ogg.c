@@ -669,6 +669,15 @@ static void Ogg_PreparePostSeek( demux_sys_t *p_sys )
     p_sys->i_pcr = VLC_TICK_INVALID;
 }
 
+/* i_pcr is on the timeline the output sees, which a stream chained onto the end
+ * of another - a seek back over the end of the file included - carries on from
+ * where the stream before it left off. Where the file is at is that timeline
+ * less the point the current stream was pinned to. */
+static vlc_tick_t Ogg_GetStreamTime( const demux_sys_t *p_sys )
+{
+    return p_sys->i_pcr - p_sys->i_nzpcr_offset;
+}
+
 static logical_stream_t * Ogg_GetSelectedStream( demux_t *p_demux )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
@@ -749,7 +758,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         case DEMUX_GET_TIME:
             if( p_sys->i_pcr != VLC_TICK_INVALID || p_sys->b_slave )
             {
-                *va_arg( args, vlc_tick_t * ) = p_sys->i_pcr;
+                *va_arg( args, vlc_tick_t * ) = Ogg_GetStreamTime( p_sys );
                 return VLC_SUCCESS;
             }
             return VLC_EGENERIC;
@@ -804,7 +813,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 
             if( p_sys->i_length > 0 && p_sys->i_pcr != VLC_TICK_INVALID )
             {
-                pos = (double) p_sys->i_pcr / (double) p_sys->i_length;
+                pos = (double) Ogg_GetStreamTime( p_sys ) / (double) p_sys->i_length;
             }
             else if( vlc_stream_GetSize( p_demux->s, &size ) == 0 && size > 0 )
             {
