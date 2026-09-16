@@ -837,11 +837,24 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         }
 
         case DEMUX_SET_TITLE:
-            return vlc_stream_vaControl( p_demux->s, STREAM_SET_TITLE, args );
-
         case DEMUX_SET_SEEKPOINT:
-            return vlc_stream_vaControl( p_demux->s, STREAM_SET_SEEKPOINT,
-                                         args );
+            /* The stream repositions itself, which is as much a seek as
+             * DEMUX_SET_POSITION is, so leave behind what that leaves behind:
+             * no dates carried over from where the stream used to be, and the
+             * tracks told their data is not continuous. */
+            i_ret = vlc_stream_vaControl( p_demux->s,
+                                          (i_query == DEMUX_SET_TITLE)
+                                              ? STREAM_SET_TITLE
+                                              : STREAM_SET_SEEKPOINT, args );
+            if( i_ret == VLC_SUCCESS )
+            {
+                p_sys->i_current_pts = 0;
+                p_sys->i_scr = -1;
+                p_sys->i_last_dts = VLC_TICK_INVALID;
+                p_sys->i_last_pcr = VLC_TICK_INVALID;
+                NotifyDiscontinuity( p_sys->tk, p_demux->out );
+            }
+            return i_ret;
 
         case DEMUX_GET_META:
             return vlc_stream_vaControl( p_demux->s, STREAM_GET_META, args );
