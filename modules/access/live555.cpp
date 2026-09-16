@@ -245,7 +245,8 @@ struct demux_sys_t
 
     bool             b_get_param;   /* Does the server support GET_PARAMETER */
     bool             b_paused;      /* Are we paused? */
-    bool             b_error;
+    bool             b_error;      /* The session is dead and cannot recover */
+    bool             b_rtsp_error; /* The last RTSP command went unanswered */
     int              i_live555_ret; /* live555 callback return code */
 
     float            f_seek_request;/* In case we receive a seek request while paused*/
@@ -523,7 +524,7 @@ static void default_live555_callback( RTSPClient* client, int result_code, char*
     demux_sys_t *p_sys = client_vlc->p_sys;
     delete []result_string;
     p_sys->i_live555_ret = result_code;
-    p_sys->b_error = p_sys->i_live555_ret != 0;
+    p_sys->b_rtsp_error = p_sys->i_live555_ret != 0;
     p_sys->event_rtsp = 1;
 }
 
@@ -541,16 +542,16 @@ static bool wait_Live555_response( demux_t *p_demux, int i_timeout = 0 /* ms */ 
                                                       p_demux );
     }
     p_sys->event_rtsp = 0;
-    p_sys->b_error = true;
+    p_sys->b_rtsp_error = true;
     p_sys->i_live555_ret = 0;
     p_sys->scheduler->doEventLoop( &p_sys->event_rtsp );
-    //here, if b_error is true and i_live555_ret = 0 we didn't receive a response
+    //here, if b_rtsp_error is true and i_live555_ret = 0 we didn't receive a response
     if( i_timeout > 0 )
     {
         /* remove the task */
         p_sys->scheduler->unscheduleDelayedTask( task );
     }
-    return !p_sys->b_error;
+    return !p_sys->b_rtsp_error;
 }
 
 static void continueAfterDESCRIBE( RTSPClient* client, int result_code,
@@ -567,11 +568,11 @@ static void continueAfterDESCRIBE( RTSPClient* client, int result_code,
         if( sdpDescription )
         {
             p_sys->p_sdp = strdup( sdpDescription );
-            p_sys->b_error = false;
+            p_sys->b_rtsp_error = false;
         }
     }
     else
-        p_sys->b_error = true;
+        p_sys->b_rtsp_error = true;
     delete[] result_string;
     p_sys->event_rtsp = 1;
 #ifdef VLC_PATCH_RTSPCLIENT_SERVERSTRING
