@@ -918,14 +918,28 @@ int Oggseek_BlindSeektoAbsoluteTime( demux_t *p_demux, logical_stream_t *p_strea
         b_found = true;
     }
 
-    /* Or try to be smart with audio fixed bitrate streams */
+    /* Or try to be smart with audio fixed bitrate streams.
+     *
+     * Where it lands has to come from what the file weighs over how long it
+     * runs. The bitrate in the header is what the encoder was asked for, not
+     * what came out - on a vorbis file encoded for quality it is out by
+     * whatever the content did - and it counts the header bytes as audio. A
+     * guess from it lands anywhere, past the end of the file included, and a
+     * seek to past the end of the file is the end of the item: --start-time on
+     * a vorbis file played nothing at all. */
     if ( !b_found && p_stream->fmt.i_cat == AUDIO_ES && p_sys->i_streams == 1
-         && p_sys->i_bitrate && Ogg_GetKeyframeGranule( p_stream, 0xFF00FF00 ) == 0xFF00FF00 )
+         && p_sys->i_length > 0 && p_sys->i_total_bytes > p_stream->i_data_start
+         && Ogg_GetKeyframeGranule( p_stream, 0xFF00FF00 ) == 0xFF00FF00 )
     {
         /* But only if there's no keyframe/preload requirements */
         /* FIXME: add function to get preload time by codec, ex: opus */
-        i_lowerpos = i_time * p_sys->i_bitrate / INT64_C(8000000);
-        b_found = true;
+        int64_t i_bytes = p_sys->i_total_bytes - p_stream->i_data_start;
+        int64_t i_guess = p_stream->i_data_start + i_bytes * i_time / p_sys->i_length;
+        if ( i_guess < p_sys->i_total_bytes )
+        {
+            i_lowerpos = i_guess;
+            b_found = true;
+        }
     }
 
     /* or search */
