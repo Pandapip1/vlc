@@ -147,6 +147,7 @@ struct demux_sys_t
 
     /* track */
     ps_track_t  tk[PS_TK_COUNT];
+    vlc_tick_t  i_last_dts[PS_TK_COUNT];
     int         i_mux_rate;
 
     /* event */
@@ -178,6 +179,7 @@ struct demux_sys_t
 static int Control( demux_t *, int, va_list );
 static int Demux( demux_t * );
 static int DemuxBlock( demux_t *, const uint8_t *, int );
+static void ForgetStreamDates( demux_sys_t * );
 static void DemuxForceStill( demux_t * );
 
 static void DemuxTitles( demux_t * );
@@ -223,6 +225,7 @@ static int CommonOpen( vlc_object_t *p_this,
     p_sys->dvdnav = p_dvdnav;
 
     ps_track_init( p_sys->tk );
+    ForgetStreamDates( p_sys );
     p_sys->b_readahead = b_readahead;
 
     /* Configure dvdnav */
@@ -869,6 +872,7 @@ static int Demux( demux_t *p_demux )
         if( p_sys->b_reset_pcr )
         {
             es_out_Control( p_demux->out, ES_OUT_RESET_PCR );
+            ForgetStreamDates( p_sys );
             p_sys->b_reset_pcr = false;
         }
         DemuxBlock( p_demux, packet, i_len );
@@ -982,6 +986,7 @@ static int Demux( demux_t *p_demux )
 
         /* reset PCR */
         es_out_Control( p_demux->out, ES_OUT_RESET_PCR );
+        ForgetStreamDates( p_sys );
 
         for( int i = 0; i < PS_TK_COUNT; i++ )
         {
@@ -1137,6 +1142,7 @@ static int Demux( demux_t *p_demux )
         p_sys->i_vobu_index = 0;
         p_sys->i_vobu_flush = 0;
         es_out_Control( p_demux->out, ES_OUT_RESET_PCR );
+        ForgetStreamDates( p_sys );
         break;
 
     case DVDNAV_WAIT:
@@ -1394,6 +1400,28 @@ static void ESSubtitleUpdate( demux_t *p_demux )
 /*****************************************************************************
  * DemuxBlock: demux a given block
  *****************************************************************************/
+/* A cell change is the DVD's own seam, and only some of them break the
+ * streams. Within a programme chain the next cell is normally multiplexed to
+ * carry straight on, and a break there costs the packetizer the frame it is
+ * part way through building. The dates say which kind of seam it is: a cell
+ * that joins hands the next date on from where the last one left off, while a
+ * cell that branches restarts or jumps. A second of slack covers a track that
+ * simply had nothing to say for a while; it is the same bound the Blu-ray
+ * timestamps filter uses before it has an average of its own to go on. */
+/* A seek or a change of domain leaves the dates below meaning nothing, so
+ * they are dropped wherever the clock itself is. */
+static void ForgetStreamDates( demux_sys_t *p_sys )
+{
+    for( int i = 0; i < PS_TK_COUNT; i++ )
+        p_sys->i_last_dts[i] = VLC_TICK_INVALID;
+}
+
+static bool CellJoinsStream( vlc_tick_t i_last_dts, vlc_tick_t i_dts )
+{
+    return i_last_dts != VLC_TICK_INVALID &&
+           i_dts >= i_last_dts && i_dts - i_last_dts <= CLOCK_FREQ;
+}
+
 static int DemuxBlock( demux_t *p_demux, const uint8_t *p, int len )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
@@ -1446,7 +1474,8 @@ static int DemuxBlock( demux_t *p_demux, const uint8_t *p, int len )
             int i_id = ps_pkt_id( p_pkt, PS_SOURCE_VOB );
             if( i_id >= 0xc0 )
             {
-                ps_track_t *tk = &p_sys->tk[ps_id_to_tk(i_id)];
+                const size_t i_tk = ps_id_to_tk(i_id);
+                ps_track_t *tk = &p_sys->tk[i_tk];
 
                 if( !tk->b_configured )
                 {
@@ -1463,11 +1492,15 @@ static int DemuxBlock( demux_t *p_demux, const uint8_t *p, int len )
                         if( p_pkt->i_dts != VLC_TICK_INVALID )
                         {
                             i_next_block_flags &= ~BLOCK_FLAG_CELL_DISCONTINUITY;
-                            i_next_block_flags |= BLOCK_FLAG_DISCONTINUITY;
+                            if( !CellJoinsStream( p_sys->i_last_dts[i_tk],
+                                                  p_pkt->i_dts ) )
+                                i_next_block_flags |= BLOCK_FLAG_DISCONTINUITY;
                         }
                         else tk->i_next_block_flags = BLOCK_FLAG_CELL_DISCONTINUITY;
                     }
                     p_pkt->i_flags |= i_next_block_flags;
+                    if( p_pkt->i_dts != VLC_TICK_INVALID )
+                        p_sys->i_last_dts[i_tk] = p_pkt->i_dts;
                     es_out_Send( p_demux->out, tk->es, p_pkt );
                 }
                 else
