@@ -71,6 +71,26 @@ bool input_DecoderIsEmpty( decoder_t * );
 bool input_DecoderIsEnding( decoder_t *, vlc_tick_t i_lead );
 
 /**
+ * How far along the timeline the content this decoder has been given reaches.
+ *
+ * The end of the last packetized block, which is where a frame's length is
+ * known rather than guessed from the step between the blocks a demuxer hands
+ * over. VLC_TICK_INVALID before anything dated has been seen, and again after
+ * a flush.
+ */
+vlc_tick_t input_DecoderGetEnd( decoder_t * );
+
+/**
+ * Tells the decoder that the data has run out where the item ends, without
+ * playback ending: the pass is about to be repeated.
+ *
+ * Unlike a drain this leaves the output alone, playing what it holds. It only
+ * asks the packetizer for the frame it is holding back, so that the whole of
+ * the item is played and input_DecoderGetEnd() describes all of it.
+ */
+void input_DecoderEndOfPass( decoder_t * );
+
+/**
  * This function activates the request closed caption channel.
  */
 int input_DecoderSetCcState( decoder_t *, vlc_fourcc_t, int i_channel, bool b_decode );

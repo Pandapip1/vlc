@@ -127,6 +127,7 @@ struct decoder_owner_sys_t
     /* Flushing */
     bool flushing;
     bool b_draining;
+    bool b_pass_end; /* the data has run out, but playback has not ended */
     atomic_bool drained;
     bool b_idle;
 
@@ -141,6 +142,11 @@ struct decoder_owner_sys_t
 
     /* Delay */
     vlc_tick_t i_ts_delay;
+
+    /* How far along the timeline the content handed over reaches, measured
+     * where a frame's length is known rather than guessed: the blocks leaving
+     * the packetizer, and the samples leaving the decoder. */
+    vlc_tick_t i_content_end;
 };
 
 /* Pictures which are DECODER_BOGUS_VIDEO_DELAY or more in advance probably have
@@ -1132,6 +1138,33 @@ static int DecoderQueueVideo( decoder_t *p_dec, picture_t *p_pic )
     return ret;
 }
 
+/**
+ * Note how far the content handed on reaches.
+ *
+ * A demuxer dates a block without always saying how long it is, so es_out has
+ * to guess the length of the last one from the step before it. Further down
+ * the chain nothing is guessed: a block leaving the packetizer carries the
+ * length of the frame it holds, and what leaves the decoder is samples. Keep
+ * the furthest end either of them reports, so that whoever needs to know where
+ * this pass stops can ask for it.
+ */
+static void DecoderUpdateContentEnd( decoder_t *p_dec, const block_t *p_block )
+{
+    decoder_owner_sys_t *p_owner = p_dec->p_owner;
+
+    const vlc_tick_t i_date = (p_block->i_dts > VLC_TICK_INVALID)
+                            ? p_block->i_dts : p_block->i_pts;
+    if( i_date <= VLC_TICK_INVALID )
+        return;
+
+    const vlc_tick_t i_end = i_date + __MAX( p_block->i_length, 0 );
+
+    vlc_fifo_Lock( p_owner->p_fifo );
+    if( i_end > p_owner->i_content_end )
+        p_owner->i_content_end = i_end;
+    vlc_fifo_Unlock( p_owner->p_fifo );
+}
+
 static int DecoderPlayAudio( decoder_t *p_dec, block_t *p_audio,
                              unsigned *restrict pi_lost_sum )
 {
@@ -1168,6 +1201,13 @@ static int DecoderPlayAudio( decoder_t *p_dec, block_t *p_audio,
         block_Release( p_audio );
         return 0;
     }
+
+    /* The samples themselves, which are the last word on how far the content
+     * reaches: a demuxer that hands over blocks it does not measure leaves the
+     * packetizer nothing to measure either, and pcm is exactly that. Still the
+     * stream's own dates here - DecoderFixTs() below is what puts them on the
+     * clock. */
+    DecoderUpdateContentEnd( p_dec, p_audio );
 
     /* */
     vlc_mutex_lock( &p_owner->lock );
@@ -1369,6 +1409,62 @@ static void DecoderDecode( decoder_t *p_dec, block_t *p_block )
 }
 
 /**
+ * Runs what the packetizer makes of pp_block through the decoder.
+ *
+ * A NULL pp_block drains the packetizer: it hands back the frame it has been
+ * sitting on, which it could not call complete while more data might still
+ * belong to it.
+ *
+ * \return false if the chain is broken and there is nothing more to do
+ */
+static bool DecoderPacketize( decoder_t *p_dec, block_t **pp_block )
+{
+    decoder_owner_sys_t *p_owner = p_dec->p_owner;
+    decoder_t *p_packetizer = p_owner->p_packetizer;
+    block_t *p_packetized_block;
+
+    while( (p_packetized_block =
+            p_packetizer->pf_packetize( p_packetizer, pp_block ) ) )
+    {
+        if( !es_format_IsSimilar( &p_dec->fmt_in, &p_packetizer->fmt_out ) )
+        {
+            msg_Dbg( p_dec, "restarting module due to input format change");
+
+            /* Drain the decoder module */
+            DecoderDecode( p_dec, NULL );
+
+            if( ReloadDecoder( p_dec, false, &p_packetizer->fmt_out,
+                               RELOAD_DECODER ) != VLC_SUCCESS )
+            {
+                block_ChainRelease( p_packetized_block );
+                return false;
+            }
+        }
+
+        if( p_packetizer->pf_get_cc )
+            PacketizerGetCc( p_dec, p_packetizer );
+
+        while( p_packetized_block )
+        {
+            block_t *p_next = p_packetized_block->p_next;
+            p_packetized_block->p_next = NULL;
+
+            DecoderUpdateContentEnd( p_dec, p_packetized_block );
+            DecoderDecode( p_dec, p_packetized_block );
+            if( p_owner->error )
+            {
+                block_ChainRelease( p_next );
+                return false;
+            }
+
+            p_packetized_block = p_next;
+        }
+    }
+
+    return true;
+}
+
+/**
  * Decode a block
  *
  * \param p_dec the decoder object
@@ -1420,57 +1516,49 @@ static void DecoderProcess( decoder_t *p_dec, block_t *p_block )
 #endif
     if( packetize )
     {
-        block_t *p_packetized_block;
         block_t **pp_block = p_block ? &p_block : NULL;
-        decoder_t *p_packetizer = p_owner->p_packetizer;
 
-        while( (p_packetized_block =
-                p_packetizer->pf_packetize( p_packetizer, pp_block ) ) )
-        {
-            if( !es_format_IsSimilar( &p_dec->fmt_in, &p_packetizer->fmt_out ) )
-            {
-                msg_Dbg( p_dec, "restarting module due to input format change");
+        if( !DecoderPacketize( p_dec, pp_block ) )
+            return;
 
-                /* Drain the decoder module */
-                DecoderDecode( p_dec, NULL );
-
-                if( ReloadDecoder( p_dec, false, &p_packetizer->fmt_out,
-                                   RELOAD_DECODER ) != VLC_SUCCESS )
-                {
-                    block_ChainRelease( p_packetized_block );
-                    return;
-                }
-            }
-
-            if( p_packetizer->pf_get_cc )
-                PacketizerGetCc( p_dec, p_packetizer );
-
-            while( p_packetized_block )
-            {
-                block_t *p_next = p_packetized_block->p_next;
-                p_packetized_block->p_next = NULL;
-
-                DecoderDecode( p_dec, p_packetized_block );
-                if( p_owner->error )
-                {
-                    block_ChainRelease( p_next );
-                    return;
-                }
-
-                p_packetized_block = p_next;
-            }
-        }
         /* Drain the decoder after the packetizer is drained */
         if( !pp_block )
             DecoderDecode( p_dec, NULL );
     }
     else
+    {
+        if( p_block != NULL )
+            DecoderUpdateContentEnd( p_dec, p_block );
         DecoderDecode( p_dec, p_block );
+    }
     return;
 
 error:
     if( p_block )
         block_Release( p_block );
+}
+
+/**
+ * Pushes out what the packetizer is holding, and nothing else.
+ *
+ * The data of a pass that is about to be repeated has run out, but playback
+ * has not ended: the output is still playing what covers the loop, and a
+ * drain would empty and stop it. Only the packetizer needs telling - it is
+ * waiting for data that is not coming, and the frame it holds is both the
+ * last of the item and where the next pass has to start.
+ */
+static void DecoderProcessPassEnd( decoder_t *p_dec )
+{
+    decoder_owner_sys_t *p_owner = p_dec->p_owner;
+
+    if( p_owner->error || p_owner->p_packetizer == NULL )
+        return;
+
+#ifdef ENABLE_SOUT
+    if( p_owner->p_sout != NULL )
+        return;
+#endif
+    DecoderPacketize( p_dec, NULL );
 }
 
 static void DecoderProcessFlush( decoder_t *p_dec )
@@ -1606,6 +1694,20 @@ static void *DecoderThread( void *p_data )
         block_t *p_block = vlc_fifo_DequeueUnlocked( p_owner->p_fifo );
         if( p_block == NULL )
         {
+            if( unlikely(p_owner->b_pass_end) )
+            {   /* Everything handed over has been packetized; what the
+                 * packetizer still holds is the end of the pass. */
+                p_owner->b_pass_end = false;
+                vlc_fifo_Unlock( p_owner->p_fifo );
+
+                int canc = vlc_savecancel();
+                DecoderProcessPassEnd( p_dec );
+                vlc_restorecancel( canc );
+
+                vlc_fifo_Lock( p_owner->p_fifo );
+                continue;
+            }
+
             if( likely(!p_owner->b_draining) )
             {   /* Wait for a block to decode (or a request to drain) */
                 p_owner->b_idle = true;
@@ -1803,6 +1905,8 @@ static decoder_t * CreateDecoder( vlc_object_t *p_parent,
     for( unsigned i = 0; i < MAX_CC_DECODERS; i++ )
         p_owner->cc.pp_decoder[i] = NULL;
     p_owner->i_ts_delay = 0;
+    p_owner->i_content_end = VLC_TICK_INVALID;
+    p_owner->b_pass_end = false;
     return p_dec;
 }
 
@@ -2117,6 +2221,17 @@ bool input_DecoderIsEnding( decoder_t * p_dec, vlc_tick_t i_lead )
     return DecoderIsEnding( p_dec, i_lead );
 }
 
+vlc_tick_t input_DecoderGetEnd( decoder_t *p_dec )
+{
+    decoder_owner_sys_t *p_owner = p_dec->p_owner;
+
+    vlc_fifo_Lock( p_owner->p_fifo );
+    const vlc_tick_t i_end = p_owner->i_content_end;
+    vlc_fifo_Unlock( p_owner->p_fifo );
+
+    return i_end;
+}
+
 /**
  * Signals that there are no further blocks to decode, and requests that the
  * decoder drain all pending buffers. This is used to ensure that all
@@ -2135,6 +2250,16 @@ void input_DecoderDrain( decoder_t *p_dec )
     vlc_fifo_Unlock( p_owner->p_fifo );
 }
 
+void input_DecoderEndOfPass( decoder_t *p_dec )
+{
+    decoder_owner_sys_t *p_owner = p_dec->p_owner;
+
+    vlc_fifo_Lock( p_owner->p_fifo );
+    p_owner->b_pass_end = true;
+    vlc_fifo_Signal( p_owner->p_fifo );
+    vlc_fifo_Unlock( p_owner->p_fifo );
+}
+
 /**
  * Requests that the decoder immediately discard all pending buffers.
  * This is useful when seeking or when deselecting a stream.
@@ -2147,6 +2272,11 @@ void input_DecoderFlush( decoder_t *p_dec )
 
     /* Empty the fifo */
     block_ChainRelease( vlc_fifo_DequeueAllUnlocked( p_owner->p_fifo ) );
+
+    /* What was handed over is being thrown away, and the timeline it reached
+     * is not where anything carries on from. */
+    p_owner->i_content_end = VLC_TICK_INVALID;
+    p_owner->b_pass_end = false;
 
     /* Don't need to wait for the DecoderThread to flush. Indeed, if called a
      * second time, this function will clear the FIFO again before anything was

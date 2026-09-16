@@ -613,6 +613,11 @@ static void MainLoopDemux( input_thread_t *p_input, bool *pb_changed )
          * the main loop waits for. */
         if( !MainLoopRepeatsInPlace( p_input ) )
             es_out_Eos(p_priv->p_es_out);
+        else
+            /* Still an end for the packetizers, which are holding the last
+             * frame of the item back waiting for data that is not coming.
+             * Where that frame ends is where the next pass starts. */
+            es_out_EndOfPass(p_priv->p_es_out);
     }
     else if( i_ret == VLC_DEMUXER_EGENERIC )
     {

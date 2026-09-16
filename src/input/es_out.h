@@ -90,6 +90,11 @@ enum es_out_query_private_e
     /* Set End Of Stream */
     ES_OUT_SET_EOS,                                 /* res=cannot fail */
 
+    /* The data of a pass has run out, but playback has not ended: the item is
+     * about to be repeated. Unlike an end of stream this does not drain, which
+     * would empty and stop the output that is covering the loop. */
+    ES_OUT_SET_PASS_END,                            /* res=cannot fail */
+
     /* Like ES_OUT_GET_EMPTY, but counting the decoders as empty while their
      * outputs still have up to i_lead left to play: the caller is given that
      * much time to have the next thing ready. */
@@ -202,6 +207,11 @@ static inline int es_out_GetGroupForced( es_out_t *p_out )
 static inline void es_out_Eos( es_out_t *p_out )
 {
     int i_ret = es_out_Control( p_out, ES_OUT_SET_EOS );
+    assert( !i_ret );
+}
+static inline void es_out_EndOfPass( es_out_t *p_out )
+{
+    int i_ret = es_out_Control( p_out, ES_OUT_SET_PASS_END );
     assert( !i_ret );
 }
 
