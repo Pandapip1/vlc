@@ -1061,8 +1061,21 @@ static int Ogg_ReadPage( demux_t *p_demux, ogg_page *p_oggpage )
     int i_read = 0;
     char *p_buffer;
 
-    while( ogg_sync_pageout( &p_ogg->oy, p_oggpage ) != 1 )
+    for( ;; )
     {
+        int i_sync = ogg_sync_pageout( &p_ogg->oy, p_oggpage );
+        if( i_sync == 1 )
+            return VLC_SUCCESS;
+
+        /* A seek lands wherever it lands, so the bytes at the read position
+         * are usually the middle of a page. ogg_sync_pageout reports that once
+         * as a hole and only then goes looking for the next page header, so
+         * ask it again before reading more: the page wanted is very often
+         * already in the buffer, and at the tail of a file there is nothing
+         * left to read that would give a second chance at it. */
+        if( i_sync < 0 )
+            continue;
+
         p_buffer = ogg_sync_buffer( &p_ogg->oy, OGGSEEK_BYTES_TO_READ );
         if( !p_buffer )
             return VLC_EGENERIC;
@@ -1073,8 +1086,6 @@ static int Ogg_ReadPage( demux_t *p_demux, ogg_page *p_oggpage )
 
         ogg_sync_wrote( &p_ogg->oy, i_read );
     }
-
-    return VLC_SUCCESS;
 }
 
 /****************************************************************************
