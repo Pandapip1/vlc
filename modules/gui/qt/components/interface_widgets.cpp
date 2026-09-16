@@ -171,26 +171,38 @@ bool VideoWidget::request( struct vout_window_t *p_wnd )
             stable->setAttribute( Qt::WA_DontCreateNativeAncestors, true);
 
             QWindow *window = stable->windowHandle();
-            assert(window != NULL);
-            window->create();
-
             QPlatformNativeInterface *qni = qApp->platformNativeInterface();
-            assert(qni != NULL);
+
+            if( window == NULL || qni == NULL )
+                goto unusable;
+            window->create();
 
             p_wnd->handle.wl = static_cast<wl_surface*>(
                 qni->nativeResourceForWindow(QByteArrayLiteral("surface"),
                                              window));
             p_wnd->display.wl = static_cast<wl_display*>(
                 qni->nativeResourceForIntegration(QByteArrayLiteral("wl_display")));
+            if( p_wnd->handle.wl == NULL || p_wnd->display.wl == NULL )
+                goto unusable;
             break;
         }
 #endif
         default:
-            vlc_assert_unreachable();
+            goto unusable;
     }
 
     enable_mouse_events = var_InheritBool(p_window, "mouse-events");
     return true;
+
+unusable:
+    /* Say the window cannot be had, rather than hand back one whose handle
+     * the caller will dereference. */
+    msg_Err( p_intf, "no video window for this Qt platform" );
+    layout->removeWidget( stable );
+    stable->deleteLater();
+    stable = NULL;
+    p_window = NULL;
+    return false;
 }
 
 QSize VideoWidget::physicalSize() const
