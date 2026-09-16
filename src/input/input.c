@@ -76,6 +76,9 @@ static void       ControlRelease( int i_type, const input_control_param_t *p_par
 static bool       ControlIsSeekRequest( int i_type );
 static bool       Control( input_thread_t *, int, input_control_param_t );
 static void       ControlPause(input_thread_t *, vlc_tick_t, bool);
+static int        ControlSetTime( input_thread_t *, vlc_tick_t, bool );
+static int        ControlSetPosition( input_thread_t *, double, bool );
+static void       ResetFramePrevious( input_thread_t * );
 
 static int  UpdateTitleSeekpointFromDemux( input_thread_t * );
 static void UpdateGenericFromDemux( input_thread_t * );
@@ -285,6 +288,7 @@ input_thread_t * input_Create( vlc_object_t *p_parent, input_item_t *p_item,
     priv->prev_frame.enabled = priv->prev_frame.end = false;
     priv->prev_frame.last_pts = VLC_TICK_INVALID;
     priv->next_frame_need_data = false;
+    priv->repeat_failed = false;
 
     priv->viewpoint_changed = false;
     /* Fetch the viewpoint from the mediaplayer or the playlist if any */
@@ -479,16 +483,22 @@ static void StartTitle( input_thread_t * p_input, bool restart )
         input_ControlPushHelper( p_input, INPUT_CONTROL_SET_SEEKPOINT, &val );
 }
 
-static void ResetPosition( input_thread_t *p_input )
+static int ResetPosition( input_thread_t *p_input )
 {
     input_thread_private_t *priv = input_priv(p_input);
     StartTitle( p_input, true );
 
-    /* Seek to start position */
+    /* Reset the decoder states and the clock sync, as a seek does, then seek
+     * to the start position. Done here rather than by queueing a seek control,
+     * so that a refusal is known to the caller: the end of stream has already
+     * been reported as handled on the strength of this reposition. */
+    es_out_Control( &priv->p_es_out->out, ES_OUT_RESET_PCR );
+    ResetFramePrevious( p_input );
+    priv->next_frame_need_data = false;
+
     if( priv->i_start > 0 )
-        input_SetTime( p_input, 0, false );
-    else
-        input_SetPosition( p_input, 0.0f, false );
+        return ControlSetTime( p_input, 0, false );
+    return ControlSetPosition( p_input, 0.0, false );
 }
 
 /*****************************************************************************
@@ -697,7 +707,15 @@ static void MainLoop( input_thread_t *p_input, bool b_interactive )
             else
             {
                 bool eof_handled;
-                if( !eof_signaled )
+                if( input_priv(p_input)->repeat_failed )
+                {
+                    /* The end of stream was reported as handled because a
+                     * repeat had been asked for, and the reposition it needs
+                     * was refused. Nothing is going to move now, so let the
+                     * end of stream through rather than wait for ever. */
+                    eof_handled = false;
+                }
+                else if( !eof_signaled )
                 {
                     eof_handled =
                         input_SendEvent(p_input, &(struct vlc_input_event) {
@@ -2425,7 +2443,11 @@ static bool Control( input_thread_t *p_input,
         }
 
         case INPUT_CONTROL_RESET_POSITION:
-            ResetPosition( p_input );
+            if( ResetPosition( p_input ) != VLC_SUCCESS )
+            {
+                msg_Warn( p_input, "repeating the input did not get anywhere" );
+                priv->repeat_failed = true;
+            }
             break;
 
         case INPUT_CONTROL_ADD_SLAVE:

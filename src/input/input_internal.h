@@ -568,6 +568,10 @@ typedef struct input_thread_private_t
     } prev_frame;
 
     bool next_frame_need_data;
+
+    /* Set when a reposition asked for by a repeat was refused: there is no
+     * second chance to take, so the end of stream has to be let through. */
+    bool repeat_failed;
 } input_thread_private_t;
 
 static inline input_thread_private_t *input_priv(input_thread_t *input)
