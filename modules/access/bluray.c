@@ -2785,7 +2785,6 @@ static void blurayHandleEvent(demux_t *p_demux, const BD_EVENT *e, bool b_delaye
         p_sys->b_pl_playing = true;
         break;
     case BD_EVENT_PLAYITEM:
-        notifyDiscontinuityToParser(p_sys);
         blurayOnClipUpdate(p_demux, e->param);
         break;
     case BD_EVENT_CHAPTER:
@@ -2867,6 +2866,7 @@ static void blurayHandleEvent(demux_t *p_demux, const BD_EVENT *e, bool b_delaye
         break;
     case BD_EVENT_DISCONTINUITY:
         /* reset demuxer (partially decoded PES packets must be dropped) */
+        notifyDiscontinuityToParser(p_sys);
         blurayRestartParser(p_demux, false, true);
         es_out_Control(p_sys->p_out, BLURAY_ES_OUT_CONTROL_FLAG_DISCONTINUITY);
         break;
