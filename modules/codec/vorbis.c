@@ -458,6 +458,12 @@ static void Flush( decoder_t *p_dec )
     decoder_sys_t *p_sys = p_dec->p_sys;
 
     date_Set( &p_sys->end_date, 0 );
+
+    /* Left in place, the half window the synthesis still holds is lapped into
+     * the first packet decoded after the seek: audio from where the stream
+     * used to be, dated where it now is. */
+    if( !p_sys->b_packetizer && p_sys->b_has_headers )
+        vorbis_synthesis_restart( &p_sys->vd );
 }
 
 /*****************************************************************************
@@ -475,7 +481,10 @@ static block_t *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
 
     if( p_block->i_flags & (BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED) )
     {
-        Flush( p_dec );
+        /* Only the dates restart: the stream carries on through this, and the
+         * synthesis still owes the packets before it their last window, which
+         * nothing but the next packet can draw out. */
+        date_Set( &p_sys->end_date, 0 );
         if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
         {
             block_Release(p_block);
