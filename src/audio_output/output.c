@@ -217,6 +217,12 @@ audio_output_t *aout_New (vlc_object_t *parent)
 
     vlc_object_set_destructor (aout, aout_Destructor);
 
+    /* aout_DecNew fills this in for every stream; zeroed here so that a trace
+     * row written before the first one - by an output reporting something as
+     * it starts - does not read uninitialised state. */
+    memset (&owner->sync, 0, sizeof (owner->sync));
+    aout_TraceOpen (aout);
+
     /* Audio output module callbacks */
     var_Create (aout, "volume", VLC_VAR_FLOAT);
     var_AddCallback (aout, "volume", var_Copy, parent);
@@ -376,6 +382,7 @@ void aout_Destroy (audio_output_t *aout)
     var_SetFloat (aout, "volume", -1.f);
     var_DelCallback (aout, "volume", var_Copy, aout->obj.parent);
     var_DelCallback (aout, "stereo-mode", StereoModeCallback, NULL);
+    aout_TraceClose (aout);
     vlc_object_release (aout);
 }
 

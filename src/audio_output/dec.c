@@ -125,6 +125,8 @@ error:
     owner->sync.drift_detune = 0.f;
     owner->sync.drift_bound = false;
     owner->sync.drift_said = VLC_TICK_INVALID;
+    aout_TraceStream (p_aout, owner->mixer_format.i_rate,
+                      aout_FiltersGetMaxDetune (owner->filters));
     aout_OutputUnlock (p_aout);
 
     atomic_init (&owner->buffers_lost, 0);
@@ -141,6 +143,7 @@ void aout_DecDelete (audio_output_t *aout)
     aout_owner_t *owner = aout_owner (aout);
 
     aout_OutputLock (aout);
+    aout_Trace (owner, .event = "stop");
     if (owner->mixer_format.i_format)
     {
         aout_FiltersDelete (aout, owner->filters);
@@ -183,6 +186,7 @@ static int aout_CheckReady (audio_output_t *aout)
         }
 
         msg_Dbg (aout, "restarting filters...");
+        aout_Trace (owner, .event = "restart");
         owner->sync.end = VLC_TICK_INVALID;
         owner->sync.source_end = VLC_TICK_INVALID;
         /* The new filters start with no correction, but the controller keeps
@@ -299,7 +303,10 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
      *    pts = mdate() + delay
      */
     if (aout_OutputTimeGet (aout, &drift) != 0)
+    {
+        aout_Trace (owner, .event = "untimed");
         return; /* nothing can be done if timing is unknown */
+    }
 
     const vlc_tick_t delay = drift, now = mdate ();
 
@@ -329,7 +336,12 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
             owner->sync.skip += drift;
             owner->sync.skip_settles = now + delay;
             owner->sync.end = VLC_TICK_INVALID;
+            aout_Trace (owner, .event = "jump", .reading = true,
+                        .drift = drift, .delay = delay, .extra = drift);
         }
+        else
+            aout_Trace (owner, .event = "settling", .reading = true,
+                        .drift = drift, .delay = delay);
         return;
     }
 
@@ -342,6 +354,8 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
             msg_Warn (aout, "playback way too early (%"PRId64"): "
                       "playing silence", drift);
         aout_DecSilence (aout, -drift, dec_pts);
+        aout_Trace (owner, .event = "silence", .reading = true,
+                    .drift = drift, .delay = delay, .extra = -drift);
 
         owner->sync.discontinuity = true;
         drift = 0;
@@ -353,18 +367,25 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
     const float max = aout_FiltersGetMaxDetune (owner->filters);
 
     if (max <= 0.f)
+    {
+        aout_Trace (owner, .event = "uncorrected", .reading = true,
+                    .drift = drift, .delay = delay);
         return; /* correction by resampling is disabled */
+    }
 
     if (owner->sync.discontinuity || owner->sync.skip > 0
      || now < owner->sync.skip_settles)
     {   /* After a jump the drift still reads the old timeline, and the offset
          * either side of a discontinuity is not drift at all. */
         owner->sync.update = now;
+        aout_Trace (owner, .event = "excluded", .reading = true,
+                    .drift = drift, .delay = delay);
         return;
     }
 
-    const float commanded = owner->sync.drift_kp * (drift / (float)CLOCK_FREQ)
-                            + owner->sync.drift_integral;
+    const float proportional =
+        owner->sync.drift_kp * (drift / (float)CLOCK_FREQ);
+    const float commanded = proportional + owner->sync.drift_integral;
     const float target = (commanded > +max) ? +max
                        : (commanded < -max) ? -max : commanded;
     const bool bound = commanded != target;
@@ -439,6 +460,12 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
             msg_Dbg (aout, "drift correction back within its limit "
                      "(drift: %"PRId64" us)", drift);
     }
+
+    /* Last, so that the integral, the detune and the bound are the ones this
+     * reading left behind rather than the ones it found. */
+    aout_Trace (owner, .event = "sync", .reading = true,
+                .drift = drift, .delay = delay, .command = true,
+                .p = proportional, .cmd = commanded, .tgt = target);
 }
 
 /*****************************************************************************
@@ -467,11 +494,13 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
          * insufficient. We assume the PTS is wrong and play the buffer anyway:
          * Hopefully video has encountered a similar PTS problem as audio. */
         msg_Warn (aout, "buffer too late (%"PRId64" us): dropped", advance);
+        aout_Trace (owner, .event = "droplate", .extra = advance);
         goto drop;
     }
     if (advance > AOUT_MAX_ADVANCE_TIME)
     {   /* Early buffers can only be caused by bugs in the decoder. */
         msg_Err (aout, "buffer too early (%"PRId64" us): dropped", advance);
+        aout_Trace (owner, .event = "dropearly", .extra = advance);
         goto drop;
     }
     if (block->i_flags & BLOCK_FLAG_DISCONTINUITY)
@@ -496,6 +525,9 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
                   "made it is upstream", (const char *)&owner->source_codec,
                   owner->source_id, (step > 0) ? "a hole" : "an overlap",
                   (step > 0) ? step : -step);
+
+        aout_Trace (owner, .event = "step", .step = true, .extra = step,
+                    .codec = owner->source_codec, .es = owner->source_id);
 
         /* Same treatment as a declared one: the offset either side of it is
          * not drift, and it is put right where it is rather than worked off
@@ -606,6 +638,8 @@ void aout_DecChangePause (audio_output_t *aout, bool paused, vlc_tick_t date)
     {
         aout_OutputPause (aout, paused, date);
     }
+    aout_Trace (owner, .event = paused ? "pause" : "resume", .extra = date);
+
     /* Nothing was played while paused: the correction stays, only the interval
      * the integral is about to be fed must not span the pause. */
     owner->sync.update = VLC_TICK_INVALID;
@@ -631,6 +665,8 @@ void aout_DecFlush (audio_output_t *aout, bool wait)
             aout_FiltersFlush (owner->filters);
         aout_OutputFlush (aout, wait);
     }
+
+    aout_Trace (owner, .event = "flush");
 
     /* The offset a flush leaves behind is not drift; do not resample to
      * catch it up. The correction accumulated so far describes the device and

@@ -24,6 +24,8 @@
 #ifndef LIBVLC_AOUT_INTERNAL_H
 # define LIBVLC_AOUT_INTERNAL_H 1
 
+# include <stdio.h>
+
 # include <vlc_atomic.h>
 # include <vlc_viewpoint.h>
 
@@ -85,6 +87,11 @@ typedef struct
         bool drift_bound; /**< Correction is pinned at the bound */
         bool discontinuity;
     } sync;
+
+    /** Where "aout-drift-trace" is being written, or NULL - which is what it
+     * is unless somebody asked, and the only thing the audio path then pays
+     * for the whole instrument. */
+    FILE *trace;
 
     int initial_stereo_mode; /**< Initial stereo mode set by options */
 
@@ -170,6 +177,46 @@ void aout_DecFlush(audio_output_t *, bool wait);
 vlc_tick_t aout_DecGetRemaining(audio_output_t *);
 vlc_tick_t aout_DecGetLatency(audio_output_t *);
 void aout_RequestRestart (audio_output_t *, unsigned);
+
+/* From trace.c */
+
+/**
+ * One row of the drift trace. Everything the controller holds - the integral,
+ * the detune in effect, whether it is pinned - is read off the owner and goes
+ * on every row; this carries what is particular to the moment.
+ *
+ * A flag says whether a field was measured rather than a sentinel value,
+ * because zero is a perfectly good drift, command and step.
+ */
+struct aout_trace_row
+{
+    const char *event;      /**< What happened, one word */
+    bool reading;           /**< The device answered: drift and delay real */
+    vlc_tick_t drift, delay;
+    bool command;           /**< The controller ran: p, cmd and tgt are real */
+    float p, cmd, tgt;
+    bool step;              /**< extra is a step, from codec on stream es */
+    vlc_tick_t extra;       /**< Step, silence, jump or shortfall, in us */
+    vlc_fourcc_t codec;
+    int es;
+};
+
+void aout_TraceOpen (audio_output_t *);
+void aout_TraceStream (audio_output_t *, unsigned rate, float max);
+void aout_TraceClose (audio_output_t *);
+void aout_TraceRow (aout_owner_t *, const struct aout_trace_row *);
+
+/**
+ * Writes a row if anybody asked for one. Nobody usually has, and then this is
+ * a load of a pointer that is always NULL and a branch that is never taken:
+ * the row is not even built, since the compound literal is inside the test.
+ */
+#define aout_Trace(owner, ...) \
+    do { \
+        if (unlikely((owner)->trace != NULL)) \
+            aout_TraceRow (owner, \
+                           &(const struct aout_trace_row){ __VA_ARGS__ }); \
+    } while (0)
 
 static inline void aout_InputRequestRestart(audio_output_t *aout)
 {

@@ -267,6 +267,16 @@ static const char *const ppsz_stereo_mode_texts[] = { N_("Unset"),
     "exactly the nominal sample rate, which the proportional term alone " \
     "cannot hold. Raising it converges sooner at the cost of overshooting." )
 
+#define AUDIO_DRIFT_TRACE_TEXT N_( \
+    "Drift correction trace file" )
+#define AUDIO_DRIFT_TRACE_LONGTEXT N_( \
+    "Write what the drift correction is doing to this file, as CSV: one row " \
+    "per reading, carrying the delay the device reported, the drift, the " \
+    "correction the controller asked for, and the one the bound and the slew " \
+    "let through, with every timeline step, inserted silence, jump and " \
+    "device run-out in its place among them. Nothing is measured and nothing " \
+    "is written unless this is set." )
+
 
 static const char *const ppsz_replay_gain_mode[] = {
     "none", "track", "album" };
@@ -1574,6 +1584,8 @@ vlc_module_begin ()
     add_float( "aout-drift-slew", AOUT_DRIFT_SLEW,
                AUDIO_DRIFT_SLEW_TEXT, AUDIO_DRIFT_SLEW_LONGTEXT, true )
         change_float_range( 0.f, 60.f )
+    add_string( "aout-drift-trace", NULL, AUDIO_DRIFT_TRACE_TEXT,
+                AUDIO_DRIFT_TRACE_LONGTEXT, true )
 
     set_subcategory( SUBCAT_AUDIO_AOUT )
     add_module( "aout", "audio output", NULL, AOUT_TEXT, AOUT_LONGTEXT,

@@ -74,6 +74,21 @@
  * instead of detuned away. Zero disables correction by resampling. */
 #define AOUT_MAX_RESAMPLING_CENTS       9
 
+/**
+ * Notes something the output is in a position to see and the core is not - a
+ * device running dry, so far - in the drift trace, if one is being written.
+ *
+ * Costs a load and a branch when nobody asked for a trace, which is always
+ * unless "aout-drift-trace" is set. Call it from the output's own entry
+ * points and nowhere else: those run under the lock that serialises the rest
+ * of the trace, and a callback of the device's own does not.
+ *
+ * \param event one word naming what happened
+ * \param value whatever quantity goes with it, in microseconds
+ */
+VLC_API void aout_TraceEvent(audio_output_t *, const char *event,
+                             int64_t value);
+
 /** Highest value accepted for "aout-max-resampling" (a whole tone) */
 #define AOUT_MAX_RESAMPLING_CENTS_MAX   200
 
