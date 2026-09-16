@@ -307,9 +307,31 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
     demux_sys_t *p_sys  = p_demux->p_sys;
 
     /* XXX: DEMUX_SET_TIME is precise here */
-    return demux_vaControlHelper( p_demux->s,
-                                   0, -1,
-                                   p_sys->frame_size * p_sys->f_rate * 8,
-                                   p_sys->frame_size, i_query, args );
+    int i_ret = demux_vaControlHelper( p_demux->s,
+                                       0, -1,
+                                       p_sys->frame_size * p_sys->f_rate * 8,
+                                       p_sys->frame_size, i_query, args );
+    if( i_ret != VLC_SUCCESS )
+        return i_ret;
+
+    switch( i_query )
+    {
+        case DEMUX_SET_POSITION:
+        case DEMUX_SET_TIME:
+            /* The helper only moved the stream: resync the pcr accumulator,
+             * else it would keep counting from before the seek and drift
+             * away from the byte derived DEMUX_GET_TIME. The helper seeks
+             * frame aligned, so the offset gives back the frame number.
+             * Pointless in hurry up mode, where the pcr is the wall clock. */
+            if( !p_sys->b_hurry_up )
+                p_sys->i_pcr = ( vlc_stream_Tell( p_demux->s )
+                                 / p_sys->frame_size )
+                             * ( INT64_C(1000000) / p_sys->f_rate );
+            break;
+        default:
+            break;
+    }
+
+    return VLC_SUCCESS;
 }
 
