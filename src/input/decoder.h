@@ -122,6 +122,26 @@ void vlc_input_decoder_StopWait( vlc_input_decoder_t * );
 bool vlc_input_decoder_IsEmpty( vlc_input_decoder_t * );
 
 /**
+ * How far along the timeline the content this decoder has been given reaches.
+ *
+ * The end of the last packetized frame, which is where a frame's length is
+ * known rather than guessed from the step between the frames a demuxer hands
+ * over. VLC_TICK_INVALID before anything dated has been seen, and again after
+ * a flush.
+ */
+vlc_tick_t vlc_input_decoder_GetEnd( vlc_input_decoder_t * );
+
+/**
+ * Tells the decoder that the data has run out where the item ends, without
+ * playback ending: the pass is about to be repeated.
+ *
+ * Unlike a drain this leaves the output alone, playing what it holds. It only
+ * asks the packetizer for the frame it is holding back, so that the whole of
+ * the item is played and vlc_input_decoder_GetEnd() describes all of it.
+ */
+void vlc_input_decoder_EndOfPass( vlc_input_decoder_t * );
+
+/**
  * This function forces the display of the next picture
  */
 void vlc_input_decoder_FrameNext( vlc_input_decoder_t *p_dec );

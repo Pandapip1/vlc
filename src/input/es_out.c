@@ -1154,6 +1154,43 @@ static void EsOutChangePosition(es_out_sys_t *p_sys,
 }
 
 
+/**
+ * How far along the timeline the content of the pass that is ending reaches.
+ *
+ * The frames a demuxer hands over are dated but not always measured, so es_out
+ * has to take the length of the last one from the step before it, and a pass
+ * whose last frame is short of that step - the common case, since a file does
+ * not end on a whole one - is credited with time it has no content for. A ts
+ * item of 174 aac frames ends its last PES nine frames in where the step
+ * before it was fourteen, and the five frames of difference are where the next
+ * pass was being started from.
+ *
+ * Further down the chain nothing is guessed: a frame leaving a packetizer
+ * carries the length of the frame it holds, and what leaves a decoder is
+ * samples, which is the only measure a container that hands over unmeasured
+ * pcm ever gets. Ask the decoders how far what they were given reaches, and
+ * keep the demuxer's estimate only for a program whose ESes have no decoder to
+ * ask - a pass nothing is being played from has nowhere it needs to resume.
+ */
+static vlc_tick_t EsOutDecodersEnd(es_out_sys_t *p_sys,
+                                   const es_out_pgrm_t *p_pgrm)
+{
+    es_out_id_t *es;
+    vlc_tick_t i_end = VLC_TICK_INVALID;
+
+    foreach_es_then_es_slaves(es)
+    {
+        if( es->p_pgrm != p_pgrm || es->p_dec == NULL )
+            continue;
+
+        const vlc_tick_t i_es_end = vlc_input_decoder_GetEnd( es->p_dec );
+        if( i_es_end > i_end )
+            i_end = i_es_end;
+    }
+
+    return ( i_end != VLC_TICK_INVALID ) ? i_end : p_pgrm->i_last_end;
+}
+
 /*****************************************************************************
  * EsOutRepeatShift: hold the timeline together across a repeat
  *****************************************************************************
@@ -1186,8 +1223,8 @@ static void EsOutRepeatShift(es_out_sys_t *p_sys, es_out_pgrm_t *p_pgrm,
         return; /* the demuxer carried the timeline across the seek */
 
     /* Where the last pass stopped: see es_out_RepeatResume(). */
-    const vlc_tick_t i_resume = es_out_RepeatResume( p_pgrm->i_last_end,
-                                                     p_pgrm->i_last_pcr,
+    const vlc_tick_t i_end = EsOutDecodersEnd( p_sys, p_pgrm );
+    const vlc_tick_t i_resume = es_out_RepeatResume( i_end, p_pgrm->i_last_pcr,
                                                      p_pgrm->i_pcr_step );
 
     p_sys->i_repeat_offset += i_resume - i_timeline;
@@ -4383,6 +4420,14 @@ static int EsOutVaPrivControlLocked(es_out_sys_t *p_sys, input_source_t *source,
         EsOutChangePosition(p_sys, NULL, false);
         p_sys->b_repeated = true;
         p_sys->b_repeat_pending = true;
+        return VLC_SUCCESS;
+    }
+    case ES_OUT_PRIV_SET_PASS_END:
+    {
+        es_out_id_t *es;
+        foreach_es_then_es_slaves(es)
+            if( es->p_dec != NULL )
+                vlc_input_decoder_EndOfPass( es->p_dec );
         return VLC_SUCCESS;
     }
     case ES_OUT_PRIV_SET_VBI_PAGE:

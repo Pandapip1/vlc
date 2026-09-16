@@ -162,6 +162,17 @@ void vlc_input_decoder_DecodeWithStatus(
     vlc_frame_Release(frame);
 }
 
+vlc_tick_t vlc_input_decoder_GetEnd(vlc_input_decoder_t *owner)
+{
+    (void)owner;
+    return VLC_TICK_INVALID;
+}
+
+void vlc_input_decoder_EndOfPass(vlc_input_decoder_t *owner)
+{
+    (void)owner;
+}
+
 void vlc_input_decoder_Drain(vlc_input_decoder_t *owner)
 {
     owner->drained = true;

@@ -112,7 +112,12 @@ enum es_out_query_private_e
     /* Reposition for a repeat of the item, which unlike an ordinary seek
      * carries straight on: what is already decoded is the tail of the pass
      * still playing and is what covers the loop. */
-    ES_OUT_PRIV_SET_TIME_REPEAT                     /* no arg                   res=cannot fail */
+    ES_OUT_PRIV_SET_TIME_REPEAT,                    /* no arg                   res=cannot fail */
+
+    /* The data of a pass has run out, but playback has not ended: the item is
+     * about to be repeated. Unlike an end of stream this does not drain, which
+     * would empty and stop the output that is covering the loop. */
+    ES_OUT_PRIV_SET_PASS_END                        /* no arg                   res=cannot fail */
 };
 
 struct vlc_input_es_out;
@@ -324,6 +329,13 @@ static inline void
 es_out_SetTimeRepeat(struct vlc_input_es_out *out)
 {
     int i_ret = es_out_PrivControl(out, ES_OUT_PRIV_SET_TIME_REPEAT);
+    assert( !i_ret );
+}
+
+static inline void
+es_out_EndOfPass(struct vlc_input_es_out *out)
+{
+    int i_ret = es_out_PrivControl(out, ES_OUT_PRIV_SET_PASS_END);
     assert( !i_ret );
 }
 
