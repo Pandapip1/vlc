@@ -460,7 +460,14 @@ static int Demux (demux_t *demux)
     uint64_t pulse = sys->pulse;
 
     if (ReadEvents (demux, &pulse, demux->out))
-        return VLC_EGENERIC;
+    {
+        /* A track that runs out mid-event is a file that was cut short, and
+         * ends where it ends; only a malformed event with the bytes still
+         * there is a fault worth killing playback over. */
+        if (vlc_stream_Eof (demux->s))
+            return VLC_DEMUXER_EOF;
+        return VLC_DEMUXER_EGENERIC;
+    }
 
     if (pulse == UINT64_MAX)
         return 0; /* all tracks are done */
