@@ -498,14 +498,6 @@ lost:
     goto out;
 }
 
-/**
- * Whether what was handed to the output has been played, or is about to be.
- *
- * For pacing on the end of playback without draining, which would also stop
- * the output. Reported an AOUT_MAX_PTS_ADVANCE early: whoever is waiting has
- * to demux and decode before any sound reaches the output, and what follows
- * is queued behind what is left rather than in place of it.
- */
 vlc_tick_t aout_DecGetLatency (audio_output_t *aout)
 {
     vlc_tick_t latency;
@@ -517,16 +509,31 @@ vlc_tick_t aout_DecGetLatency (audio_output_t *aout)
     return latency;
 }
 
-bool aout_DecIsEmpty (audio_output_t *aout)
+/**
+ * How much of what was handed to the output is still to be played.
+ *
+ * For pacing on the end of playback without draining, which would also stop
+ * the output. Whoever is waiting for the end has to demux and decode before
+ * any sound reaches the output, so it decides how much of the tail to leave
+ * unplayed and work in: what it queues next goes behind what is left rather
+ * than in place of it.
+ */
+vlc_tick_t aout_DecGetRemaining (audio_output_t *aout)
 {
     aout_owner_t *owner = aout_owner (aout);
-    bool empty;
+    vlc_tick_t remaining;
 
     aout_OutputLock (aout);
-    empty = owner->sync.end == VLC_TICK_INVALID
-         || mdate () + AOUT_MAX_PTS_ADVANCE >= owner->sync.end;
+    if (owner->sync.end == VLC_TICK_INVALID)
+        remaining = 0;
+    else
+    {
+        remaining = owner->sync.end - mdate ();
+        if (remaining < 0)
+            remaining = 0;
+    }
     aout_OutputUnlock (aout);
-    return empty;
+    return remaining;
 }
 
 void aout_DecGetResetStats(audio_output_t *aout, unsigned *restrict lost,

@@ -64,6 +64,13 @@ void input_DecoderStopWait( decoder_t * );
 bool input_DecoderIsEmpty( decoder_t * );
 
 /**
+ * The same, but counting the decoder as empty while its output still has up
+ * to i_lead of what it was given left to play. Whoever asks gets that much
+ * time to have something else ready before the output runs dry.
+ */
+bool input_DecoderIsEnding( decoder_t *, vlc_tick_t i_lead );
+
+/**
  * This function activates the request closed caption channel.
  */
 int input_DecoderSetCcState( decoder_t *, vlc_fourcc_t, int i_channel, bool b_decode );

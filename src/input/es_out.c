@@ -447,7 +447,7 @@ static es_out_id_t *EsOutGetFromID( es_out_t *out, int i_id )
     return NULL;
 }
 
-static bool EsOutDecodersIsEmpty( es_out_t *out )
+static bool EsOutDecodersIsEnding( es_out_t *out, vlc_tick_t i_lead )
 {
     es_out_sys_t      *p_sys = out->p_sys;
 
@@ -462,12 +462,17 @@ static bool EsOutDecodersIsEmpty( es_out_t *out )
     {
         es_out_id_t *es = p_sys->es[i];
 
-        if( es->p_dec && !input_DecoderIsEmpty( es->p_dec ) )
+        if( es->p_dec && !input_DecoderIsEnding( es->p_dec, i_lead ) )
             return false;
-        if( es->p_dec_record && !input_DecoderIsEmpty( es->p_dec_record ) )
+        if( es->p_dec_record && !input_DecoderIsEnding( es->p_dec_record, i_lead ) )
             return false;
     }
     return true;
+}
+
+static bool EsOutDecodersIsEmpty( es_out_t *out )
+{
+    return EsOutDecodersIsEnding( out, AOUT_MAX_PTS_ADVANCE );
 }
 
 static void EsOutSetDelay( es_out_t *out, int i_cat, int64_t i_delay )
@@ -2889,6 +2894,14 @@ static int EsOutControlLocked( es_out_t *out, int i_query, va_list args )
     {
         bool *pb = va_arg( args, bool* );
         *pb = EsOutDecodersIsEmpty( out );
+        return VLC_SUCCESS;
+    }
+
+    case ES_OUT_GET_ENDING:
+    {
+        const vlc_tick_t i_lead = va_arg( args, vlc_tick_t );
+        bool *pb = va_arg( args, bool* );
+        *pb = EsOutDecodersIsEnding( out, i_lead );
         return VLC_SUCCESS;
     }
 

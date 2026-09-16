@@ -2063,7 +2063,7 @@ void input_DecoderDecode( decoder_t *p_dec, block_t *p_block, bool b_do_pace )
     vlc_fifo_Unlock( p_owner->p_fifo );
 }
 
-bool input_DecoderIsEmpty( decoder_t * p_dec )
+static bool DecoderIsEnding( decoder_t * p_dec, vlc_tick_t i_lead )
 {
     decoder_owner_sys_t *p_owner = p_dec->p_owner;
 
@@ -2096,13 +2096,25 @@ bool input_DecoderIsEmpty( decoder_t * p_dec )
              * nothing left to hand over, not that any of it has been heard.
              * Whoever is waiting for the end is waiting for the sound. */
             b_empty = p_owner->p_aout == NULL
-                   || aout_DecIsEmpty( p_owner->p_aout );
+                   || aout_DecGetRemaining( p_owner->p_aout ) <= i_lead;
     }
     else
         b_empty = true; /* TODO subtitles support */
     vlc_mutex_unlock( &p_owner->lock );
 
     return b_empty;
+}
+
+bool input_DecoderIsEmpty( decoder_t * p_dec )
+{
+    /* The output plays what it is given a buffer at a time, so the last of it
+     * is as good as played once it is the only thing left. */
+    return DecoderIsEnding( p_dec, AOUT_MAX_PTS_ADVANCE );
+}
+
+bool input_DecoderIsEnding( decoder_t * p_dec, vlc_tick_t i_lead )
+{
+    return DecoderIsEnding( p_dec, i_lead );
 }
 
 /**

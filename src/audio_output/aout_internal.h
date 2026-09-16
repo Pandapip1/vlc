@@ -159,7 +159,7 @@ int aout_DecPlay(audio_output_t *, block_t *, int i_input_rate);
 void aout_DecGetResetStats(audio_output_t *, unsigned *, unsigned *);
 void aout_DecChangePause(audio_output_t *, bool b_paused, vlc_tick_t i_date);
 void aout_DecFlush(audio_output_t *, bool wait);
-bool aout_DecIsEmpty(audio_output_t *);
+vlc_tick_t aout_DecGetRemaining(audio_output_t *);
 vlc_tick_t aout_DecGetLatency(audio_output_t *);
 void aout_RequestRestart (audio_output_t *, unsigned);
 

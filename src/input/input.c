@@ -709,6 +709,34 @@ static int MainLoopTryRepeat( input_thread_t *p_input )
     return VLC_SUCCESS;
 }
 
+/* How much of the tail the output may still be holding when the next pass is
+ * asked for. */
+#define INPUT_REPEAT_LEAD (CLOCK_FREQ / 4)
+
+/**
+ * Whether the tail of the item has been played out far enough to ask for what
+ * comes after it.
+ *
+ * A repeat in place keeps the output running, so what it is still holding is
+ * the whole cushion the demuxer restart, the decoder start-up and the
+ * scheduler have to fit in. The output's own lead of AOUT_MAX_PTS_ADVANCE is
+ * 40 ms of it, which is enough when everything is prompt and not enough when
+ * the machine is loaded. Leave a proper margin instead: nothing is skipped by
+ * asking early, since the next pass is queued behind what is left rather than
+ * in place of it.
+ *
+ * An end that is really an end drains the output, which plays out whatever is
+ * left, so the margin is not the repeat path's to take there.
+ */
+static bool MainLoopTailDone( input_thread_t *p_input )
+{
+    es_out_t *p_es_out = input_priv(p_input)->p_es_out;
+
+    if( MainLoopRepeatsInPlace( p_input ) )
+        return es_out_GetEnding( p_es_out, INPUT_REPEAT_LEAD );
+    return es_out_GetEmpty( p_es_out );
+}
+
 /**
  * Update timing infos and statistics.
  */
@@ -788,7 +816,7 @@ static void MainLoop( input_thread_t *p_input, bool b_interactive )
 
                 b_paused_at_eof = false;
             }
-            else if( !es_out_GetEmpty( input_priv(p_input)->p_es_out ) )
+            else if( !MainLoopTailDone( p_input ) )
             {
                 /* Not at the idle rate: what follows a repeat cannot be asked
                  * for until this reports empty, so a tenth of a second of

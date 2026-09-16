@@ -495,6 +495,18 @@ static void Del( es_out_t *p_out, es_out_id_t *p_es )
     vlc_mutex_unlock( &p_sys->lock );
 }
 
+static int ControlLockedGetEnding( es_out_t *p_out, vlc_tick_t i_lead,
+                                   bool *pb_empty )
+{
+    es_out_sys_t *p_sys = p_out->p_sys;
+
+    if( p_sys->b_delayed && TsHasCmd( p_sys->p_ts ) )
+        *pb_empty = false;
+    else
+        *pb_empty = es_out_GetEnding( p_sys->p_out, i_lead );
+
+    return VLC_SUCCESS;
+}
 static int ControlLockedGetEmpty( es_out_t *p_out, bool *pb_empty )
 {
     es_out_sys_t *p_sys = p_out->p_sys;
@@ -682,6 +694,12 @@ static int ControlLocked( es_out_t *p_out, int i_query, va_list args )
     {
         bool *pb_empty = (bool*)va_arg( args, bool* );
         return ControlLockedGetEmpty( p_out, pb_empty );
+    }
+    case ES_OUT_GET_ENDING:
+    {
+        const vlc_tick_t i_lead = (vlc_tick_t)va_arg( args, vlc_tick_t );
+        bool *pb_empty = (bool*)va_arg( args, bool* );
+        return ControlLockedGetEnding( p_out, i_lead, pb_empty );
     }
     case ES_OUT_GET_WAKE_UP: /* TODO ? */
     {

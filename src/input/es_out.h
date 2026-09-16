@@ -89,6 +89,11 @@ enum es_out_query_private_e
 
     /* Set End Of Stream */
     ES_OUT_SET_EOS,                                 /* res=cannot fail */
+
+    /* Like ES_OUT_GET_EMPTY, but counting the decoders as empty while their
+     * outputs still have up to i_lead left to play: the caller is given that
+     * much time to have the next thing ready. */
+    ES_OUT_GET_ENDING,      /* arg1=vlc_tick_t i_lead arg2=bool* res=cannot fail */
 };
 
 static inline void es_out_SetMode( es_out_t *p_out, int i_mode )
@@ -116,6 +121,14 @@ static inline bool es_out_GetEmpty( es_out_t *p_out )
 {
     bool b;
     int i_ret = es_out_Control( p_out, ES_OUT_GET_EMPTY, &b );
+
+    assert( !i_ret );
+    return b;
+}
+static inline bool es_out_GetEnding( es_out_t *p_out, vlc_tick_t i_lead )
+{
+    bool b;
+    int i_ret = es_out_Control( p_out, ES_OUT_GET_ENDING, i_lead, &b );
 
     assert( !i_ret );
     return b;
