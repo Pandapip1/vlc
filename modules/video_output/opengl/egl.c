@@ -307,6 +307,14 @@ static int Open (vlc_object_t *obj, const struct gl_api *api)
     if (wnd->type != VOUT_WINDOW_TYPE_WAYLAND)
         goto error;
 
+    /* wl_egl_window_create() takes no view on a NULL surface and the EGL
+     * implementation dereferences it, so refuse it here. */
+    if (wnd->handle.wl == NULL)
+    {
+        msg_Err(obj, "window has no Wayland surface");
+        goto error;
+    }
+
 # ifdef EGL_EXT_platform_wayland
     if (!CheckClientExt("EGL_EXT_platform_wayland"))
         goto error;
