@@ -383,7 +383,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             if( p_sys->p_index == NULL )
                 *b = false;
             else
-            if( vlc_stream_Control( p_demux->s, STREAM_CAN_SEEK, &b ) )
+            if( vlc_stream_Control( p_demux->s, STREAM_CAN_SEEK, b ) )
                 *b = false;
 
             return VLC_SUCCESS;
