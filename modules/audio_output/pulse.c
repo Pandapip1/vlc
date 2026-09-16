@@ -238,7 +238,7 @@ static vlc_tick_t stream_queued(pa_stream *s)
     int64_t queued;
 
     if (ti == NULL || ti->write_index_corrupt || ti->read_index_corrupt)
-        return VLC_TICK_INVALID;
+        return -1;
 
     queued = ti->write_index - ti->read_index;
 
@@ -420,7 +420,7 @@ static void stream_start(pa_stream *s, audio_output_t *aout)
      * first block is on its own, so wait until enough is behind it to keep
      * the device going. */
     queued = stream_queued(s);
-    if (queued != VLC_TICK_INVALID && queued < AOUT_MIN_PREPARE_TIME)
+    if (queued >= 0 && queued < AOUT_MIN_PREPARE_TIME)
         return;
 
     if (sys->trigger != NULL) {
@@ -749,8 +749,7 @@ static void stream_write_cb(pa_stream *s, size_t nbytes, void *userdata)
     /* Only up to the target fill: the server would take as much as maxlength
      * allows, and every second of it is a second the audio sits behind. */
     queued = stream_queued(s);
-    room = 3 * AOUT_MIN_PREPARE_TIME
-           - (queued == VLC_TICK_INVALID ? 0 : queued);
+    room = 3 * AOUT_MIN_PREPARE_TIME - (queued < 0 ? 0 : queued);
 
     if (room > 0)
     {
