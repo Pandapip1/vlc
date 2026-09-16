@@ -684,7 +684,10 @@ static int Demux( demux_t *p_demux )
 
                 if( tk->i_next_block_flags )
                 {
-                    p_pkt->i_flags = tk->i_next_block_flags;
+                    /* Add to what the packet already carries: assigning here
+                     * threw away the BLOCK_FLAG_SCRAMBLED that
+                     * ps_pkt_parse_pes() had just put on it. */
+                    p_pkt->i_flags |= tk->i_next_block_flags;
                     tk->i_next_block_flags = 0;
                 }
 #if 0
