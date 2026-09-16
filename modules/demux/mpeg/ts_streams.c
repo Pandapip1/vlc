@@ -107,6 +107,9 @@ ts_pmt_t *ts_pmt_New( demux_t *p_demux )
     pmt->i_last_dts = VLC_TICK_INVALID;
     pmt->i_last_dts_byte = 0;
     pmt->b_last_dts_probed = false;
+    pmt->i_first_sent_dts = VLC_TICK_INVALID;
+    pmt->i_last_sent_dts = VLC_TICK_INVALID;
+    pmt->i_last_sent_pcr = VLC_TICK_INVALID;
 
     pmt->p_atsc_si_basepid      = NULL;
     pmt->p_si_sdt_pid = NULL;
