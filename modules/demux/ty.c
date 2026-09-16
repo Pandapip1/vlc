@@ -546,10 +546,11 @@ static int Control(demux_t *p_demux, int i_query, va_list args)
         *p_i64 = (p_sys->l_last_ty_pts / 1000);
         return VLC_SUCCESS;
     case DEMUX_GET_LENGTH:    /* length of program in microseconds, 0 if unk */
-        /* size / bitrate */
+        /* size / bitrate - neither of which is known here, and zero is a
+         * length, not a way of saying there is none. Say there is none. */
         p_i64 = va_arg(args, int64_t *);
         *p_i64 = 0;
-        return VLC_SUCCESS;
+        return VLC_EGENERIC;
     case DEMUX_SET_TIME:      /* arg is time in microsecs */
         i64 = va_arg( args, int64_t );
         /* See DEMUX_SET_POSITION above. */
