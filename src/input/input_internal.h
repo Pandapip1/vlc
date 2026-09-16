@@ -407,6 +407,15 @@ void input_Close( input_thread_t * );
 
 void input_SetTime( input_thread_t *, vlc_tick_t i_time, bool b_fast );
 
+/**
+ * Say whether the end of the data will be answered by a repeat of the item.
+ *
+ * The end of a pass that is about to be repeated is not an end of stream: the
+ * output goes on playing what it holds while the demuxer starts over, and
+ * draining it would empty and stop it.
+ */
+void input_SetRepeatsInPlace( input_thread_t *, bool );
+
 void input_SetPosition( input_thread_t *, double f_position, bool b_fast );
 
 /**
@@ -572,6 +581,11 @@ typedef struct input_thread_private_t
     /* Set when a reposition asked for by a repeat was refused: there is no
      * second chance to take, so the end of stream has to be let through. */
     bool repeat_failed;
+
+    /* Whether the end of the data is expected to be answered by a repeat of
+     * the item rather than by the item ending. Written by whoever decides
+     * that - the player - and read by the input thread at the end of a pass. */
+    atomic_bool repeats_in_place;
 } input_thread_private_t;
 
 static inline input_thread_private_t *input_priv(input_thread_t *input)

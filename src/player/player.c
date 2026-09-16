@@ -1325,6 +1325,7 @@ vlc_player_SetPlayAndPause(vlc_player_t *player, bool play_and_pause)
 {
     vlc_player_assert_locked(player);
     player->play_and_pause = play_and_pause;
+    vlc_player_input_UpdateRepeatsInPlace(player->input);
 }
 
 void
@@ -1332,6 +1333,7 @@ vlc_player_SetRepeatCount(vlc_player_t *player, unsigned repeat_count)
 {
     vlc_player_assert_locked(player);
     player->repeat = repeat_count;
+    vlc_player_input_UpdateRepeatsInPlace(player->input);
 }
 
 void
@@ -1339,6 +1341,7 @@ vlc_player_SetRepeatCurrent(vlc_player_t *player, bool repeat)
 {
     vlc_player_assert_locked(player);
     player->repeat_current = repeat;
+    vlc_player_input_UpdateRepeatsInPlace(player->input);
 }
 
 static void

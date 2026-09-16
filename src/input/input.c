@@ -289,6 +289,7 @@ input_thread_t * input_Create( vlc_object_t *p_parent, input_item_t *p_item,
     priv->prev_frame.last_pts = VLC_TICK_INVALID;
     priv->next_frame_need_data = false;
     priv->repeat_failed = false;
+    atomic_init( &priv->repeats_in_place, false );
 
     priv->viewpoint_changed = false;
     /* Fetch the viewpoint from the mediaplayer or the playlist if any */
@@ -483,6 +484,12 @@ static void StartTitle( input_thread_t * p_input, bool restart )
         input_ControlPushHelper( p_input, INPUT_CONTROL_SET_SEEKPOINT, &val );
 }
 
+void input_SetRepeatsInPlace( input_thread_t *p_input, bool repeats )
+{
+    atomic_store_explicit( &input_priv(p_input)->repeats_in_place, repeats,
+                           memory_order_relaxed );
+}
+
 static int ResetPosition( input_thread_t *p_input )
 {
     input_thread_private_t *priv = input_priv(p_input);
@@ -509,6 +516,14 @@ static int ResetPosition( input_thread_t *p_input )
  * MainLoopDemux
  * It asks the demuxer to demux some data
  */
+static bool MainLoopRepeatsInPlace( input_thread_t *p_input )
+{
+    input_thread_private_t *priv = input_priv(p_input);
+
+    return priv->master->b_can_seek
+        && atomic_load_explicit( &priv->repeats_in_place, memory_order_relaxed );
+}
+
 static void MainLoopDemux( input_thread_t *p_input, bool *pb_changed )
 {
     input_thread_private_t* p_priv = input_priv(p_input);
@@ -556,7 +571,14 @@ static void MainLoopDemux( input_thread_t *p_input, bool *pb_changed )
     {
         msg_Dbg( p_input, "EOF reached" );
         p_priv->master->b_eof = true;
-        es_out_Eos(p_priv->p_es_out);
+
+        /* Draining is for an end that is one. A repeat carries straight on,
+         * and a drain plays the output empty and then stops it, so the next
+         * pass would have to start it again - heard as a gap at every loop.
+         * The main loop still waits for the decoders to report empty, so the
+         * repeat is still paced by the sound finishing. */
+        if( !MainLoopRepeatsInPlace( p_input ) )
+            es_out_Eos(p_priv->p_es_out);
     }
     else if( i_ret == VLC_DEMUXER_EGENERIC )
     {

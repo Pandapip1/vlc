@@ -483,6 +483,9 @@ int
 vlc_player_input_Start(struct vlc_player_input *input);
 
 void
+vlc_player_input_UpdateRepeatsInPlace(struct vlc_player_input *input);
+
+void
 vlc_player_input_SeekByPos(struct vlc_player_input *input, double position,
                            enum vlc_player_seek_speed speed,
                            enum vlc_player_whence whence);

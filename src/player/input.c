@@ -95,6 +95,27 @@ vlc_player_input_HandleAtoBLoop(struct vlc_player_input *input, bool forced)
     return false;
 }
 
+/**
+ * Tell the input whether its end will be answered by a repeat of the item.
+ *
+ * The input needs this before the end arrives: a pass that is about to be
+ * repeated must not drain the output, which a drain would empty and stop.
+ * Pausing at the end takes priority over repeating, so an item asked for with
+ * both ends like any other.
+ */
+void
+vlc_player_input_UpdateRepeatsInPlace(struct vlc_player_input *input)
+{
+    if (input == NULL)
+        return;
+
+    vlc_player_t *player = input->player;
+
+    input_SetRepeatsInPlace(input->thread,
+                            !player->play_and_pause
+                            && (player->repeat_current || input->repeat > 0));
+}
+
 int
 vlc_player_input_Start(struct vlc_player_input *input)
 {
@@ -102,6 +123,7 @@ vlc_player_input_Start(struct vlc_player_input *input)
     if (ret != VLC_SUCCESS)
         return ret;
     input->started = true;
+    vlc_player_input_UpdateRepeatsInPlace(input);
     return ret;
 }
 
@@ -1028,6 +1050,7 @@ input_thread_Events(input_thread_t *input_thread,
             else if (input->repeat > 0)
             {
                 input->repeat--;
+                vlc_player_input_UpdateRepeatsInPlace(input);
                 handled =
                     input_ControlPush(input->thread,
                                       INPUT_CONTROL_RESET_POSITION, NULL) == 0;
