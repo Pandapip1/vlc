@@ -191,6 +191,7 @@ static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
             sys->b_dry = true;
             sys->i_runouts++;
             msg_Dbg( aout, "ran out of data by %"PRId64" us", -i_queued );
+            aout_TraceEvent( aout, "runout", -i_queued );
         }
         if( -i_queued > sys->i_shortfall )
             sys->i_shortfall = -i_queued;
