@@ -891,6 +891,11 @@ static block_t *Packetize(decoder_t *p_dec, block_t **pp_block)
                 block_Release(p_block);
                 return NULL;
             }
+
+            /* What is left of this block once a frame has been taken out of
+             * it comes straight back here, and the break belongs to the seam
+             * the block arrived on, not to the rest of the block. */
+            p_block->i_flags &= ~BLOCK_FLAG_DISCONTINUITY;
         }
 
         if ( p_block->i_pts == VLC_TICK_INVALID &&
