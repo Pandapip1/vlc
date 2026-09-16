@@ -387,6 +387,41 @@ static void Close( vlc_object_t * p_this )
 }
 
 /*****************************************************************************
+ * PostSeekReset: put the parser back where the stream now is
+ *****************************************************************************
+ * A seek leaves the packetizer holding the bytes of a frame that is no longer
+ * the one that comes next, and a date that no longer says anything about
+ * where the stream has landed. Empty it and give it the start of a stream
+ * again, so that the first frame after the seek is dated from the position
+ * sought to instead of being carried on from the frame before the seek.
+ *****************************************************************************/
+static void PostSeekReset( demux_t *p_demux, vlc_tick_t i_time )
+{
+    demux_sys_t *p_sys = p_demux->p_sys;
+
+    if( p_sys->p_packetizer->pf_flush )
+        p_sys->p_packetizer->pf_flush( p_sys->p_packetizer );
+    else
+    {
+        block_t *p_block_out;
+        while( ( p_block_out = p_sys->p_packetizer->pf_packetize(
+                                   p_sys->p_packetizer, NULL ) ) )
+            block_ChainRelease( p_block_out );
+    }
+
+    /* And reset buffered data */
+    if( p_sys->p_packetized_data )
+        block_ChainRelease( p_sys->p_packetized_data );
+    p_sys->p_packetized_data = NULL;
+
+    /* An emptied packetizer dates itself from the block it is next handed,
+     * and b_start is what makes that block carry a date. */
+    p_sys->b_start = true;
+    p_sys->i_pts = 0;
+    p_sys->i_time_offset = i_time;
+}
+
+/*****************************************************************************
  * Control:
  *****************************************************************************/
 static int Control( demux_t *p_demux, int i_query, va_list args )
@@ -453,11 +488,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
                 int i_ret = vlc_stream_Seek( p_demux->s, p_sys->i_stream_offset + i_pos );
                 if( i_ret != VLC_SUCCESS )
                     return i_ret;
-                p_sys->i_time_offset = i_time - p_sys->i_pts;
-                /* And reset buffered data */
-                if( p_sys->p_packetized_data )
-                    block_ChainRelease( p_sys->p_packetized_data );
-                p_sys->p_packetized_data = NULL;
+                PostSeekReset( p_demux, i_time );
                 return VLC_SUCCESS;
             }
             /* FIXME TODO: implement a high precision seek (with mp3 parsing)
@@ -473,13 +504,9 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
                 int64_t i_time = INT64_C(8000000) * ( vlc_stream_Tell(p_demux->s) - p_sys->i_stream_offset ) /
                     p_sys->i_bitrate_avg;
 
-                /* Fix time_offset */
-                if( i_time >= 0 )
-                    p_sys->i_time_offset = i_time - p_sys->i_pts;
-                /* And reset buffered data */
-                if( p_sys->p_packetized_data )
-                    block_ChainRelease( p_sys->p_packetized_data );
-                p_sys->p_packetized_data = NULL;
+                if( i_time < 0 )
+                    i_time = 0;
+                PostSeekReset( p_demux, i_time );
             }
             return i_ret;
     }
