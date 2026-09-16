@@ -1877,7 +1877,13 @@ static int DemuxMoov( demux_t *p_demux )
     }
 
     p_sys->i_nztime += DEMUX_INCREMENT;
-    if( p_sys->i_pcr != VLC_TICK_INVALID && VLC_TICK_0 + p_sys->i_nztime > p_sys->i_pcr )
+    /* Only while there is more to come: a round that ran the tracks out has
+     * handed over everything the item has, and moving the pcr a whole
+     * increment past it would credit the item with time it has no content
+     * for - which is where anything resuming from the end of it would start. */
+    if( i_status == VLC_DEMUXER_SUCCESS
+     && p_sys->i_pcr != VLC_TICK_INVALID
+     && VLC_TICK_0 + p_sys->i_nztime > p_sys->i_pcr )
     {
         p_sys->i_pcr = VLC_TICK_0 + p_sys->i_nztime;
         es_out_SetPCR( p_demux->out, p_sys->i_pcr );
