@@ -33,6 +33,9 @@
 
 #include <limits.h>
 #include <assert.h>
+#ifdef __linux__
+# include <sys/prctl.h>
+#endif
 #include <sys/stat.h>
 
 #include "input_internal.h"
@@ -491,6 +494,10 @@ static void *Run( void *data )
 {
     input_thread_private_t *priv = data;
     input_thread_t *p_input = &priv->input;
+
+#ifdef __linux__
+    prctl( PR_SET_NAME, "vlc-input", 0, 0, 0 );
+#endif
 
     vlc_interrupt_set(&priv->interrupt);
 

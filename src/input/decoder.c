@@ -30,6 +30,9 @@
 # include "config.h"
 #endif
 #include <assert.h>
+#ifdef __linux__
+# include <sys/prctl.h>
+#endif
 
 #include <vlc_common.h>
 
@@ -1630,6 +1633,13 @@ static void *DecoderThread( void *p_data )
     decoder_t *p_dec = (decoder_t *)p_data;
     decoder_owner_sys_t *p_owner = p_dec->p_owner;
     bool paused = false;
+
+#ifdef __linux__
+    /* So that per-thread scheduling can be read out of /proc. */
+    prctl( PR_SET_NAME,
+           p_dec->fmt_out.i_cat == AUDIO_ES ? "vlc-adec" : "vlc-vdec",
+           0, 0, 0 );
+#endif
 
     /* The decoder's main loop */
     vlc_fifo_Lock( p_owner->p_fifo );
