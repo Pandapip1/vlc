@@ -869,7 +869,14 @@ static int Demux( demux_t *p_demux )
     demux_sys_t *p_sys = p_demux->p_sys;
 
     if ( !p_sys->b_slave )
+    {
         Fix( p_demux );
+        /* The date names where the output has got to, and this pass takes it as
+         * far as the barrier it is about to publish. Step it before the pass
+         * rather than after, so that what is reported between passes is the
+         * pcr just published and not the one the pass after this will reach. */
+        p_sys->i_next_demux_date += CLOCK_FREQ / 8;
+    }
 
     int64_t i_barrier = p_sys->i_next_demux_date - var_GetInteger( p_demux->obj.parent, "spu-delay" );
     if( i_barrier < 0 )
@@ -904,10 +911,7 @@ static int Demux( demux_t *p_demux )
     }
 
     if ( !p_sys->b_slave )
-    {
         es_out_SetPCR( p_demux->out, VLC_TICK_0 + i_barrier );
-        p_sys->i_next_demux_date += CLOCK_FREQ / 8;
-    }
 
     if( p_sys->subtitles.i_current >= p_sys->subtitles.i_count )
         return VLC_DEMUXER_EOF;
