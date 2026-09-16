@@ -473,8 +473,23 @@ static int Demux( demux_t *p_demux )
         return 0;
     }
 
+    /* The read is clamped to the end of the data chunk, so the last one is
+     * short whenever the chunk does not divide by the frame. Count what came
+     * back rather than a whole frame, and say how far it reaches: a reader
+     * left to work that out from the frame before it puts the end of the
+     * stream up to a frame late. */
+    unsigned i_samples = p_sys->i_frame_samples;
+
+    if( p_block->i_buffer < p_sys->i_frame_size )
+        i_samples = p_block->i_buffer * p_sys->i_frame_samples
+                  / p_sys->i_frame_size;
+
+    const vlc_tick_t i_date = date_Get( &p_sys->pts );
+
     p_block->i_dts =
-    p_block->i_pts = VLC_TICK_0 + date_Get( &p_sys->pts );
+    p_block->i_pts = VLC_TICK_0 + i_date;
+    p_block->i_nb_samples = i_samples;
+    p_block->i_length = date_Increment( &p_sys->pts, i_samples ) - i_date;
 
     /* set PCR */
     es_out_SetPCR( p_demux->out, p_block->i_pts );
@@ -486,8 +501,6 @@ static int Demux( demux_t *p_demux )
                              p_sys->pi_chan_table, p_sys->fmt.i_codec );
 
     es_out_Send( p_demux->out, p_sys->p_es, p_block );
-
-    date_Increment( &p_sys->pts, p_sys->i_frame_samples );
 
     return 1;
 }
