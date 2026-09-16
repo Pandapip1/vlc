@@ -378,9 +378,12 @@ static int Demux( demux_t *p_demux )
 
         if( fh.i_type != 'R' && fh.i_length > 0 )
         {
+            /* A block the header announced but the file does not hold is a
+             * recording that was cut short, which ends here rather than
+             * failing: the two reads either side of this one say EOF. */
             if( vlc_stream_Read( p_demux->s, NULL,
                                  fh.i_length ) != fh.i_length )
-                return VLC_DEMUXER_EGENERIC;
+                return VLC_DEMUXER_EOF;
         }
     }
 
