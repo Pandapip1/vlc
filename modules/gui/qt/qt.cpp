@@ -454,10 +454,13 @@ static int Open( vlc_object_t *p_this, bool isDialogProvider )
     void *(*thread)(void *) = Thread;
 
 #ifdef QT_HAS_X11
+    /* Built against X11, but the session running it need not have one. Take
+     * xcb where there is a display to take it from, and otherwise leave the
+     * platform to Qt, which knows about the wayland it was built with. This
+     * refused to start at all, which on a wayland session with no XWayland is
+     * every time. */
     if( HasX11( p_this ) )
         thread = ThreadXCB;
-    else
-        return VLC_EGENERIC;
 #endif
 
     QMutexLocker locker (&lock);
