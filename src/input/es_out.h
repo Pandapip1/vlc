@@ -94,6 +94,11 @@ enum es_out_query_private_e
      * outputs still have up to i_lead left to play: the caller is given that
      * much time to have the next thing ready. */
     ES_OUT_GET_ENDING,      /* arg1=vlc_tick_t i_lead arg2=bool* res=cannot fail */
+
+    /* Whether the demuxer has handed any data over since the last position
+     * change: a demuxer can return success from Demux() without emitting
+     * anything, and a repeat that keeps doing so is not making progress. */
+    ES_OUT_GET_PROGRESSED,  /* arg1=bool* res=cannot fail */
 };
 
 static inline void es_out_SetMode( es_out_t *p_out, int i_mode )
@@ -129,6 +134,14 @@ static inline bool es_out_GetEnding( es_out_t *p_out, vlc_tick_t i_lead )
 {
     bool b;
     int i_ret = es_out_Control( p_out, ES_OUT_GET_ENDING, i_lead, &b );
+
+    assert( !i_ret );
+    return b;
+}
+static inline bool es_out_GetProgressed( es_out_t *p_out )
+{
+    bool b;
+    int i_ret = es_out_Control( p_out, ES_OUT_GET_PROGRESSED, &b );
 
     assert( !i_ret );
     return b;

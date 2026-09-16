@@ -2950,6 +2950,22 @@ static int EsOutControlLocked( es_out_t *out, int i_query, va_list args )
         return VLC_SUCCESS;
     }
 
+    case ES_OUT_GET_PROGRESSED:
+    {
+        bool *pb = va_arg( args, bool* );
+
+        *pb = false;
+        for( int i = 0; i < p_sys->i_pgrm; i++ )
+        {
+            if( p_sys->pgrm[i]->i_last_end > VLC_TICK_INVALID )
+            {
+                *pb = true;
+                break;
+            }
+        }
+        return VLC_SUCCESS;
+    }
+
     case ES_OUT_SET_DELAY:
     {
         const int i_cat = va_arg( args, int );

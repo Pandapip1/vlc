@@ -579,7 +579,11 @@ static void MainLoopDemux( input_thread_t *p_input, bool *pb_changed )
     if( i_ret == VLC_DEMUXER_SUCCESS )
         i_ret = demux_Demux( p_demux );
 
-    if( i_ret > 0 )
+    /* Only data reaching the output says the repeat got somewhere. A demuxer
+     * can return success having emitted nothing at all - a subtitle file
+     * claimed by a program stream demuxer does it at every pass - and taking
+     * the return alone would clear the count forever and spin. */
+    if( i_ret > 0 && es_out_GetProgressed( p_priv->p_es_out ) )
         p_priv->i_repeat_pending = 0;
 
     i_ret = i_ret > 0 ? VLC_DEMUXER_SUCCESS : ( i_ret < 0 ? VLC_DEMUXER_EGENERIC : VLC_DEMUXER_EOF);

@@ -507,6 +507,19 @@ static int ControlLockedGetEnding( es_out_t *p_out, vlc_tick_t i_lead,
 
     return VLC_SUCCESS;
 }
+static int ControlLockedGetProgressed( es_out_t *p_out, bool *pb )
+{
+    es_out_sys_t *p_sys = p_out->p_sys;
+
+    /* A queued command is data the demuxer handed over, whether or not it has
+     * reached the output yet. */
+    if( p_sys->b_delayed && TsHasCmd( p_sys->p_ts ) )
+        *pb = true;
+    else
+        *pb = es_out_GetProgressed( p_sys->p_out );
+
+    return VLC_SUCCESS;
+}
 static int ControlLockedGetEmpty( es_out_t *p_out, bool *pb_empty )
 {
     es_out_sys_t *p_sys = p_out->p_sys;
@@ -700,6 +713,11 @@ static int ControlLocked( es_out_t *p_out, int i_query, va_list args )
         const vlc_tick_t i_lead = (vlc_tick_t)va_arg( args, vlc_tick_t );
         bool *pb_empty = (bool*)va_arg( args, bool* );
         return ControlLockedGetEnding( p_out, i_lead, pb_empty );
+    }
+    case ES_OUT_GET_PROGRESSED:
+    {
+        bool *pb = (bool*)va_arg( args, bool* );
+        return ControlLockedGetProgressed( p_out, pb );
     }
     case ES_OUT_GET_WAKE_UP: /* TODO ? */
     {
