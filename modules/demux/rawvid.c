@@ -443,7 +443,29 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
                                                     p_sys->pcr.i_divider_den;
 
     /* XXX: DEMUX_SET_TIME is precise here */
-    return demux_vaControlHelper( p_demux->s, 0, -1, i_bps,
-                                   p_sys->frame_size, i_query, args );
+    int i_ret = demux_vaControlHelper( p_demux->s, 0, -1, i_bps,
+                                       p_sys->frame_size, i_query, args );
+    if( i_ret != VLC_SUCCESS )
+        return i_ret;
+
+    switch( i_query )
+    {
+        case DEMUX_SET_POSITION:
+        case DEMUX_SET_TIME:
+            /* The helper only moved the stream: resync the pcr accumulator,
+             * else it would keep counting from before the seek and drift
+             * away from the byte derived DEMUX_GET_TIME. The helper seeks
+             * frame aligned, so the offset gives back the frame number. */
+            date_Set( &p_sys->pcr,
+                      (int64_t)( vlc_stream_Tell( p_demux->s )
+                                 / p_sys->frame_size )
+                      * CLOCK_FREQ * p_sys->pcr.i_divider_den
+                      / p_sys->pcr.i_divider_num );
+            break;
+        default:
+            break;
+    }
+
+    return VLC_SUCCESS;
 }
 
