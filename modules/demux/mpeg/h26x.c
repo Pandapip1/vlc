@@ -471,8 +471,10 @@ static int Demux( demux_t *p_demux)
                 p_sys->p_es = es_out_Add( p_demux->out, &p_sys->p_packetizer->fmt_out );
                 if( !p_sys->p_es )
                 {
+                    /* Failing to add the ES is a failure, not the end of
+                     * the stream: saying EOF made the item look finished. */
                     block_ChainRelease( p_block_out );
-                    return VLC_DEMUXER_EOF;
+                    return VLC_DEMUXER_EGENERIC;
                 }
             }
 
