@@ -169,6 +169,7 @@ typedef struct
     /* For VBR audio only */
     unsigned int    i_blockno;
     unsigned int    i_blocksize;
+    uint32_t        i_hdrsamples; /* samples the stream header claims */
 
 } avi_track_t;
 
@@ -512,6 +513,7 @@ static int Open( vlc_object_t * p_this )
         tk->i_rate  = p_strh->i_rate;
         tk->i_scale = p_strh->i_scale;
         tk->i_samplesize = p_strh->i_samplesize;
+        tk->i_hdrsamples = p_strh->i_length;
         msg_Dbg( p_demux, "stream[%u] rate:%u scale:%u samplesize:%u",
                 i, tk->i_rate, tk->i_scale, tk->i_samplesize );
         if( tk->i_scale > tk->i_rate || !tk->i_scale || !tk->i_rate )
@@ -984,6 +986,34 @@ aviindex:
             tk->i_rate       = i_track_length  * CLOCK_FREQ / i_length;
             msg_Warn( p_demux, "track[%u] fixed with rate=%u scale=%u (BeOS MediaKit generated)", i, tk->i_rate, tk->i_scale );
         }
+    }
+
+    /* Counting a chunk as several blocks of nBlockAlign bytes, which is what
+     * the remark at the top of this file describes, only says anything when a
+     * chunk really does hold more than one of them. Muxers that have no block
+     * size to give write the PCM one instead - ffmpeg writes channels times
+     * bits over eight, which is 4 for DTS - and a whole frame then counts as
+     * hundreds of blocks, stretching four seconds of audio over seventeen
+     * minutes of clock with the input asleep between chunks for the whole of
+     * it, which is indistinguishable from a hang. The header says how many
+     * samples the stream holds: when that is no more than the number of
+     * chunks, each chunk is one sample and there is nothing to emulate. */
+    for( unsigned i = 0 ; i < p_sys->i_track; i++ )
+    {
+        avi_track_t *tk = p_sys->track[i];
+
+        if( tk->fmt.i_cat != AUDIO_ES ||
+            tk->idx.i_size < 1 ||
+            tk->i_samplesize != 0 ||
+            tk->i_blocksize == 0 ||
+            tk->i_hdrsamples == 0 ||
+            tk->i_hdrsamples > tk->idx.i_size )
+            continue;
+
+        msg_Dbg( p_demux, "track[%u] holds %u samples in %u chunks: ignoring "
+                 "blockalign %u", i, tk->i_hdrsamples, tk->idx.i_size,
+                 tk->i_blocksize );
+        tk->i_blocksize = 0;
     }
 
     if( p_sys->b_seekable )
