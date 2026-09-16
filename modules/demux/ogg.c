@@ -733,6 +733,15 @@ static void Ogg_ResetStreamsHelper( demux_sys_t *p_sys )
     p_sys->i_pcr = VLC_TS_UNKNOWN;
 }
 
+/* i_pcr is on the timeline the output sees, which a stream chained onto the end
+ * of another - a seek back over the end of the file included - carries on from
+ * where the stream before it left off. Where the file is at is that timeline
+ * less the point the current stream was pinned to. */
+static vlc_tick_t Ogg_GetStreamTime( const demux_sys_t *p_sys )
+{
+    return p_sys->i_pcr - p_sys->i_nzpcr_offset;
+}
+
 static logical_stream_t * Ogg_GetSelectedStream( demux_t *p_demux )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
@@ -804,7 +813,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             if( p_sys->i_pcr > VLC_TICK_INVALID || p_sys->b_slave )
             {
                 pi64 = va_arg( args, int64_t * );
-                *pi64 = p_sys->i_pcr;
+                *pi64 = Ogg_GetStreamTime( p_sys );
                 return VLC_SUCCESS;
             }
             return VLC_EGENERIC;
@@ -852,7 +861,8 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             pf = va_arg( args, double * );
             if( p_sys->i_length > 0 && p_sys->i_pcr > VLC_TICK_INVALID )
             {
-                *pf =  (double) p_sys->i_pcr / (double) p_sys->i_length;
+                i64 = Ogg_GetStreamTime( p_sys );
+                *pf =  (double) i64 / (double) p_sys->i_length;
             }
             else if( stream_Size( p_demux->s ) > 0 )
             {
@@ -1160,8 +1170,13 @@ static void Ogg_SendOrQueueBlocks( demux_t *p_demux, logical_stream_t *p_stream,
                                    block_t *p_block )
 {
     demux_sys_t *p_ogg = p_demux->p_sys;
-    if ( (!p_stream->p_es || p_stream->prepcr.pp_blocks || p_stream->i_pcr == VLC_TS_UNKNOWN) &&
-         p_ogg->i_nzpcr_offset == 0 /* Not on chained streams */ )
+    /* A page still having its timestamps worked out has to be held whole:
+     * prepcr fills them in backwards from the page's granule once the page is
+     * through. What is held beyond that is held for want of an ES to send it
+     * to, which a stream chained onto another one already has. */
+    if ( p_stream->prepcr.pp_blocks ||
+         ( ( !p_stream->p_es || p_stream->i_pcr == VLC_TS_UNKNOWN ) &&
+           p_ogg->i_nzpcr_offset == 0 /* Not on chained streams */ ) )
     {
         if ( !p_block ) return;
         if ( p_stream->prepcr.pp_blocks )
