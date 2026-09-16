@@ -205,6 +205,31 @@ unusable:
     return false;
 }
 
+/**
+ * Read the platform handle again, once the widget sits where it will stay.
+ *
+ * Reparenting or showing the widget makes Qt build its native window afresh,
+ * which on Wayland leaves the surface request() read pointing at a destroyed
+ * one.
+ **/
+void VideoWidget::reacquireHandle( void )
+{
+#ifdef QT_HAS_WAYLAND
+    if( p_window == NULL || p_window->type != VOUT_WINDOW_TYPE_WAYLAND )
+        return;
+
+    QWindow *window = stable->windowHandle();
+    QPlatformNativeInterface *qni = qApp->platformNativeInterface();
+    wl_surface *surface = ( window != NULL && qni != NULL )
+        ? static_cast<wl_surface *>(
+            qni->nativeResourceForWindow(QByteArrayLiteral("surface"), window))
+        : NULL;
+
+    if( surface != NULL )
+        p_window->handle.wl = surface;
+#endif
+}
+
 QSize VideoWidget::physicalSize() const
 {
 #ifdef QT_HAS_X11

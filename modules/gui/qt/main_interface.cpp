@@ -792,6 +792,8 @@ void MainInterface::getVideoSlot( struct vout_window_t *p_wnd,
 
             videoWidget->setSize( i_width, i_height );
         }
+
+        videoWidget->reacquireHandle();
     }
 }
 
