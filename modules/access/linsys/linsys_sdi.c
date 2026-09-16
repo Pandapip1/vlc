@@ -342,12 +342,16 @@ static int DemuxDemux( demux_t *p_demux )
     i_ret = HandleSDBuffer( p_demux, p_block->p_buffer, p_block->i_buffer );
     block_Release( p_block );
 
-    return ( i_ret == VLC_SUCCESS );
+    /* A failure here is a failure: mapping it onto 0 made it an end of
+     * stream, which is how the core reads it, and left VLC_DEMUXER_EGENERIC
+     * unreachable from this demuxer. */
+    return ( i_ret == VLC_SUCCESS ) ? VLC_DEMUXER_SUCCESS : VLC_DEMUXER_EGENERIC;
 }
 
 static int Demux( demux_t *p_demux )
 {
-    return ( Capture( p_demux ) == VLC_SUCCESS );
+    return ( Capture( p_demux ) == VLC_SUCCESS ) ? VLC_DEMUXER_SUCCESS
+                                                 : VLC_DEMUXER_EGENERIC;
 }
 
 /*****************************************************************************
