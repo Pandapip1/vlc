@@ -29,6 +29,7 @@
 #include <QDesktopWidget>
 #else
 #include <QScreen>
+#include <QGuiApplication>
 #endif
 
 #define TIP_HEIGHT 5
@@ -93,7 +94,23 @@ void TimeTooltip::adjustPosition()
     position.setY( qMax( screen.top(), qMin( position.y(),
         screen.top() + screen.height() - size.height() ) ) );
 
-    move( position );
+    /* A wayland popup is placed by its positioner when it is mapped and cannot
+     * be moved afterwards - Qt 5.15 does not implement xdg_popup.reposition -
+     * so a plain move on a visible tip updates what Qt believes its geometry
+     * to be and nothing on screen. Take it down and put it back up at the new
+     * place. The remap flickers, so it is only for the platform that needs it;
+     * everywhere else a move is honoured as it stands. */
+    static const bool b_remap =
+        QGuiApplication::platformName().startsWith( QLatin1String( "wayland" ) );
+
+    if( b_remap && isVisible() && pos() != position )
+    {
+        hide();
+        move( position );
+        show();
+    }
+    else
+        move( position );
 
     int tipX = mTarget.x() - position.x();
     if( mBox != textbox || mTipX != tipX )
