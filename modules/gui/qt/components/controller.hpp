@@ -52,6 +52,7 @@ class WidgetListing;
 
 class QSignalMapper;
 class QTimer;
+class QGraphicsOpacityEffect;
 
 typedef enum buttonType_e
 {
@@ -256,9 +257,7 @@ public:
     void fullscreenChanged( vout_thread_t *, bool b_fs, int i_timeout );
     void mouseChanged( vout_thread_t *, int i_mousex, int i_mousey );
     void toggleFullwidth();
-    void updateFullwidthGeometry( int number );
-    int targetScreen();
-    void setTargetScreen( int );
+    void updateFullwidthGeometry();
 
 private:
     static int FullscreenChanged( vlc_object_t *obj,
@@ -292,15 +291,24 @@ protected:
 private slots:
     void showFSC();
     void planHideFSC();
-    void hideFSC() { hide(); }
+    void hideFSC();
     void slowHideFSC();
     void restoreFSC();
-    void centerFSC( int );
+    void centerFSC();
 
 private:
+    /* The controller is a child of the window that went fullscreen, so every
+     * position it deals with is in that window's coordinates. */
+    QPoint boundToParent( const QPoint & ) const;
+#if HAVE_TRANSPARENCY
+    void setFscOpacity( qreal );
+    qreal fscOpacity() const;
+#endif
+
     QTimer *p_hideTimer;
 #if HAVE_TRANSPARENCY
     QTimer *p_slowHideTimer;
+    QGraphicsOpacityEffect *p_opacityEffect;
     bool b_slow_hide_begin;
     int  i_slow_hide_timeout;
     float f_opacity;
@@ -308,9 +316,6 @@ private:
 
     int i_mouse_last_x, i_mouse_last_y;
     bool b_mouse_over;
-    int i_screennumber;
-    QRect screenRes;
-    QRect previousScreenRes;
     QPoint previousPosition;
 
     /* List of vouts currently tracked */

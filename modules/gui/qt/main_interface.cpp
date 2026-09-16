@@ -890,9 +890,8 @@ void MainInterface::setVideoFullScreen( bool fs )
 
         if ( numscreen >= 0 && numscreen < QGuiApplication::screens().length() )
         {
-            if( fullscreenControls )
-                fullscreenControls->setTargetScreen( numscreen );
-
+            /* The fullscreen controller rides along inside this window, so
+             * moving the window is all there is to choosing its screen. */
             QRect screenres = QGuiApplication::screens()[ numscreen ]->geometry();
             lastWinScreen = windowHandle()->screen();
             windowHandle()->setScreen(QGuiApplication::screens()[numscreen]);

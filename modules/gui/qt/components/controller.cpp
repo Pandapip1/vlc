@@ -50,11 +50,7 @@
 #include <QSignalMapper>
 #include <QTimer>
 #include <QApplication>
-#include <QWindow>
-#include <QScreen>
-#if QT_VERSION < QT_VERSION_CHECK(5, 10, 0)
-#include <QDesktopWidget>
-#endif
+#include <QGraphicsOpacityEffect>
 
 //#define DEBUG_LAYOUT 1
 
@@ -794,15 +790,19 @@ FullscreenControllerWidget::FullscreenControllerWidget( intf_thread_t *_p_i, QWi
 #endif
     b_fullscreen        = false;
     i_hide_timeout      = 1;
-    i_screennumber      = -1;
 
     vout.clear();
 
-    setWindowFlags( Qt::Tool | Qt::FramelessWindowHint | Qt::X11BypassWindowManagerHint );
-    setAttribute( Qt::WA_ShowWithoutActivating );
+    /* The controller is a plain child of the window that goes fullscreen, not
+     * a top-level of its own: a client cannot place a top-level on wayland,
+     * and a compositor need not offer a flat screen to place it on at all. */
+    hide();
     setMinimumWidth( FSC_WIDTH );
     isWideFSC = false;
 
+    /* A top-level got its background painted for it; a child widget has to
+     * ask, or the video behind it shows straight through the bar. */
+    setAutoFillBackground( true );
     setFrameShape( QFrame::StyledPanel );
     setFrameStyle( QFrame::Sunken );
     setSizePolicy( QSizePolicy::Minimum, QSizePolicy::Minimum );
@@ -829,6 +829,12 @@ FullscreenControllerWidget::FullscreenControllerWidget( intf_thread_t *_p_i, QWi
     p_slowHideTimer = new QTimer( this );
     connect( p_slowHideTimer, &QTimer::timeout, this, &FullscreenControllerWidget::slowHideFSC );
     f_opacity = var_InheritFloat( p_intf, "qt-fs-opacity" );
+
+    /* A child widget has no window opacity to fade, so the fade is done with
+     * per-pixel alpha over whatever the parent window has already drawn. */
+    p_opacityEffect = new QGraphicsOpacityEffect( this );
+    p_opacityEffect->setOpacity( f_opacity );
+    setGraphicsEffect( p_opacityEffect );
 #endif
 
     i_sensitivity = var_InheritInteger( p_intf, "qt-fs-sensitivity" );
@@ -839,8 +845,7 @@ FullscreenControllerWidget::FullscreenControllerWidget( intf_thread_t *_p_i, QWi
              this, &FullscreenControllerWidget::setVoutList, Qt::DirectConnection );
 
     /* First Move */
-    previousPosition = getSettings()->value( "FullScreen/pos" ).toPoint();
-    screenRes = getSettings()->value( "FullScreen/screen" ).toRect();
+    previousPosition = getSettings()->value( "FullScreen/pos", QPoint( -1, -1 ) ).toPoint();
     isWideFSC = getSettings()->value( "FullScreen/wide" ).toBool();
 
     connect( this, QOverload<bool>::of(&FullscreenControllerWidget::fullscreenChanged), THEMIM, &MainInputManager::changeFullscreen );
@@ -856,11 +861,26 @@ FullscreenControllerWidget::~FullscreenControllerWidget()
     wParent->removeEventFilter( this );
 
     getSettings()->setValue( "FullScreen/pos", previousPosition );
-    getSettings()->setValue( "FullScreen/screen", screenRes );
     getSettings()->setValue( "FullScreen/wide", isWideFSC );
 
     setVoutList( NULL, 0 );
     vlc_mutex_destroy( &lock );
+}
+
+/**
+ * Keep a position within the window the controller is drawn in.
+ */
+QPoint FullscreenControllerWidget::boundToParent( const QPoint &point ) const
+{
+    const QWidget *wParent = parentWidget();
+    Q_ASSERT( wParent );
+
+    const QRect area = wParent->rect();
+
+    return QPoint( qBound( area.left(), point.x(),
+                           qMax( area.left(), area.right() + 1 - width() ) ),
+                   qBound( area.top(), point.y(),
+                           qMax( area.top(), area.bottom() + 1 - height() ) ) );
 }
 
 void FullscreenControllerWidget::restoreFSC()
@@ -871,46 +891,34 @@ void FullscreenControllerWidget::restoreFSC()
         setMinimumWidth( FSC_WIDTH );
         adjustSize();
 
-        if ( targetScreen() < 0 )
-            return;
-
-        QRect currentRes = QGuiApplication::screens()[ targetScreen() ]->geometry();
-        QWindow *wh = windowHandle();
-        if ( wh != Q_NULLPTR )
+        if( previousPosition.x() < 0 || previousPosition.y() < 0 )
         {
-            wh->setScreen(QGuiApplication::screens()[targetScreen()]);
-        }
-
-        if( currentRes == screenRes &&
-            currentRes.contains( previousPosition, true ) )
-        {
-            /* Restore to the last known position */
-            move( previousPosition );
+            msg_Dbg( p_intf, "Recentering the Fullscreen Controller" );
+            centerFSC();
         }
         else
-        {
-            /* FSC is out of screen or screen resolution changed */
-            msg_Dbg( p_intf, "Recentering the Fullscreen Controller" );
-            centerFSC( targetScreen() );
-            screenRes = currentRes;
-            previousPosition = pos();
-        }
+            /* Restore to the last known position, dragged back inside the
+             * window if that has since become too small to hold it there */
+            move( boundToParent( previousPosition ) );
+
+        previousPosition = pos();
     }
     else
     {
-        /* Dock at the bottom of the screen */
-        updateFullwidthGeometry( targetScreen() );
+        /* Dock at the bottom of the window */
+        updateFullwidthGeometry();
     }
 }
 
-void FullscreenControllerWidget::centerFSC( int number )
+void FullscreenControllerWidget::centerFSC()
 {
-    QRect currentRes = QGuiApplication::screens()[ number ]->geometry();
+    const QWidget *wParent = parentWidget();
+    Q_ASSERT( wParent );
 
-    /* screen has changed, calculate new position */
-    QPoint pos = QPoint( currentRes.x() + (currentRes.width() / 2) - (width() / 2),
-            currentRes.y() + currentRes.height() - height());
-    move( pos );
+    const QRect area = wParent->rect();
+
+    move( area.x() + ( area.width() - width() ) / 2,
+          area.y() + area.height() - height() );
 }
 
 /**
@@ -918,13 +926,36 @@ void FullscreenControllerWidget::centerFSC( int number )
  */
 void FullscreenControllerWidget::showFSC()
 {
+    QWidget *wParent = parentWidget();
+    Q_ASSERT( wParent );
+
+    /* The controller is drawn inside the window that went fullscreen. If the
+     * interface does not own that window - the video is in a standalone one,
+     * say - there is no surface here to draw it in. */
+    if( !wParent->isFullScreen() )
+        return;
+
     restoreFSC();
 
 #if HAVE_TRANSPARENCY
-    setWindowOpacity( f_opacity );
+    setFscOpacity( f_opacity );
 #endif
 
     show();
+    raise();
+}
+
+/**
+ * Take the fullscreen controller away
+ */
+void FullscreenControllerWidget::hideFSC()
+{
+    p_hideTimer->stop();
+#if HAVE_TRANSPARENCY
+    /* stop fading something that is no longer on screen */
+    p_slowHideTimer->stop();
+#endif
+    hide();
 }
 
 /**
@@ -959,30 +990,49 @@ void FullscreenControllerWidget::slowHideFSC()
 
         p_slowHideTimer->stop();
         /* the last part of time divided to 100 pieces */
-        p_slowHideTimer->start( (int)( i_slow_hide_timeout / 2 / ( windowOpacity() * 100 ) ) );
+        p_slowHideTimer->start( (int)( i_slow_hide_timeout / 2 / ( fscOpacity() * 100 ) ) );
 
     }
     else
     {
-         if ( windowOpacity() > 0.0 )
+         if ( fscOpacity() > 0.0 )
          {
              /* we should use 0.01 because of 100 pieces ^^^
                 but than it cannt be done in time */
-             setWindowOpacity( windowOpacity() - 0.02 );
+             setFscOpacity( fscOpacity() - 0.02 );
          }
 
-         if ( windowOpacity() <= 0.0 )
-             p_slowHideTimer->stop();
+         if ( fscOpacity() <= 0.0 )
+             /* A child widget faded to nothing is still a widget sitting on
+              * the video, so take it away rather than leave it there. */
+             hideFSC();
     }
 #endif
 }
 
-void FullscreenControllerWidget::updateFullwidthGeometry( int number )
+#if HAVE_TRANSPARENCY
+void FullscreenControllerWidget::setFscOpacity( qreal opacity )
 {
-    QRect screenGeometry = QGuiApplication::screens()[ number ]->geometry();
-    setMinimumWidth( screenGeometry.width() );
-    setGeometry( screenGeometry.x(), screenGeometry.y() + screenGeometry.height() - height(), screenGeometry.width(), height() );
+    p_opacityEffect->setOpacity( qBound( qreal(0.0), opacity, qreal(1.0) ) );
+}
+
+qreal FullscreenControllerWidget::fscOpacity() const
+{
+    return p_opacityEffect->opacity();
+}
+#endif
+
+void FullscreenControllerWidget::updateFullwidthGeometry()
+{
+    const QWidget *wParent = parentWidget();
+    Q_ASSERT( wParent );
+
+    const QRect area = wParent->rect();
+
+    setMinimumWidth( area.width() );
     adjustSize();
+    setGeometry( area.x(), area.y() + area.height() - height(),
+                 area.width(), height() );
 }
 
 void FullscreenControllerWidget::toggleFullwidth()
@@ -991,35 +1041,6 @@ void FullscreenControllerWidget::toggleFullwidth()
     isWideFSC = !isWideFSC;
 
     restoreFSC();
-}
-
-
-void FullscreenControllerWidget::setTargetScreen(int screennumber)
-{
-    i_screennumber = screennumber;
-}
-
-
-int FullscreenControllerWidget::targetScreen()
-{
-    if( i_screennumber < 0 || i_screennumber >= QGuiApplication::screens().length() )
-    {
-#if QT_VERSION >= QT_VERSION_CHECK(5, 10, 0)
-        auto *screen = QGuiApplication::screenAt( p_intf->p_sys->p_mi->pos() );
-        if (screen != nullptr)
-        {
-            for (qsizetype i = 0; i < QGuiApplication::screens().length(); i++)
-            {
-                if (screen == QGuiApplication::screens()[i])
-                    return i;
-            }
-        }
-        return -1;
-#else
-        return QApplication::desktop()->screenNumber( p_intf->p_sys->p_mi );
-#endif
-    }
-    return i_screennumber;
 }
 
 /**
@@ -1082,11 +1103,29 @@ bool FullscreenControllerWidget::eventFilter( QObject *watched, QEvent *event )
     const QWidget *wParent = parentWidget();
     Q_ASSERT( wParent );
 
-    if ( watched == wParent && event->type() == QEvent::ActivationChange )
+    if ( watched == wParent )
     {
-        /* Hide if not active */
-        if ( !wParent->isActiveWindow() && !isActiveWindow() )
-            hideFSC();
+        switch ( event->type() )
+        {
+        case QEvent::ActivationChange:
+            /* Hide if not active */
+            if ( !wParent->isActiveWindow() )
+                hideFSC();
+            break;
+        case QEvent::Resize:
+            /* The controller is placed in the window's own coordinates, so it
+             * has to be put back whenever the window changes shape. */
+            if ( !isHidden() )
+            {
+                if ( wParent->isFullScreen() )
+                    restoreFSC();
+                else
+                    hideFSC();
+            }
+            break;
+        default:
+            break;
+        }
     }
 
     return AbstractController::eventFilter( watched, event );
@@ -1111,12 +1150,8 @@ void FullscreenControllerWidget::mouseMoveEvent( QMouseEvent *event )
         int i_moveX = pos.x() - i_mouse_last_x;
         int i_moveY = pos.y() - i_mouse_last_y;
 
-        const QRect screenRect = QGuiApplication::screens()[ targetScreen() ]->geometry();
-
-        const int i_x = qBound( screenRect.left(), x() + i_moveX, screenRect.right() - width() );
-        const int i_y = qBound( screenRect.top(),  y() + i_moveY, screenRect.bottom() - height() );
-
-        move( i_x, i_y );
+        /* dragged around inside the window it is drawn in, not the screen */
+        move( boundToParent( QPoint( x() + i_moveX, y() + i_moveY ) ) );
 
         i_mouse_last_x = pos.x();
         i_mouse_last_y = pos.y();
@@ -1165,7 +1200,7 @@ void FullscreenControllerWidget::enterEvent( QEvent *event )
     p_hideTimer->stop();
 #if HAVE_TRANSPARENCY
     p_slowHideTimer->stop();
-    setWindowOpacity( f_opacity );
+    setFscOpacity( f_opacity );
 #endif
     event->accept();
 }
@@ -1317,7 +1352,7 @@ void FullscreenControllerWidget::mouseChanged( vout_thread_t *, int i_mousex, in
     Q_ASSERT( wParent );
 
     /* Ignore mouse events if not active */
-    if ( !wParent->isActiveWindow() &&  !isActiveWindow() ) return;
+    if ( !wParent->isActiveWindow() ) return;
 
     bool b_toShow;
 
