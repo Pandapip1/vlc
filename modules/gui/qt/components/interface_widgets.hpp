@@ -205,8 +205,8 @@ private:
     intf_thread_t *p_intf;
     bool b_remainingTime;
     float cachedPos;
-    int64_t cachedTime;
-    int cachedLength;
+    vlc_tick_t cachedTime;
+    vlc_tick_t cachedLength;
     TimeLabel::Display displayType;
 
     char psz_length[MSTRTIME_MAX_SIZE];
@@ -215,7 +215,7 @@ private:
     void refresh();
 private slots:
     void setRemainingTime( bool );
-    void setDisplayPosition( float pos, int64_t time, int length );
+    void setDisplayPosition( float pos, vlc_tick_t time, vlc_tick_t length );
     void setDisplayPosition( float pos );
 signals:
     void broadcastRemainingTime( bool );

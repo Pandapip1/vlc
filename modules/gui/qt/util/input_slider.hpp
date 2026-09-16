@@ -127,7 +127,7 @@ private:
     WheelToVLCConverter wheelEventConverter;
 
 public slots:
-    void setPosition( float, int64_t, int );
+    void setPosition( float, vlc_tick_t, vlc_tick_t );
     void setSeekable( bool b ) { b_seekable = b ; }
     void updateBuffering( float );
     void hideHandle();

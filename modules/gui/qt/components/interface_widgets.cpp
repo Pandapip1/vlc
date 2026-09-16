@@ -982,7 +982,7 @@ TimeLabel::TimeLabel( intf_thread_t *_p_intf, TimeLabel::Display _displayType  )
              this, QOverload<float>::of(&TimeLabel::setDisplayPosition) );
 
     connect( THEMIM->getIM(), &InputManager::positionUpdated,
-              this, QOverload<float, vlc_tick_t, int>::of(&TimeLabel::setDisplayPosition) );
+              this, QOverload<float, vlc_tick_t, vlc_tick_t>::of(&TimeLabel::setDisplayPosition) );
 
     connect( this, &TimeLabel::broadcastRemainingTime,
          THEMIM->getIM(), &InputManager::remainingTimeChanged );
@@ -1019,7 +1019,7 @@ void TimeLabel::refresh()
     setDisplayPosition( cachedPos, cachedTime, cachedLength );
 }
 
-void TimeLabel::setDisplayPosition( float pos, int64_t t, int length )
+void TimeLabel::setDisplayPosition( float pos, vlc_tick_t t, vlc_tick_t length )
 {
     cachedPos = pos;
     if( pos == -1.f )
@@ -1032,11 +1032,12 @@ void TimeLabel::setDisplayPosition( float pos, int64_t t, int length )
         return;
     }
 
-    int time = t / 1000000;
+    int time = SEC_FROM_VLC_TICK( t );
+    vlc_tick_t remaining = ( length > t ) ? length - t : 0;
 
-    secstotimestr( psz_length, length );
-    secstotimestr( psz_time, ( b_remainingTime && length ) ? length - time
-                                                           : time );
+    secstotimestr( psz_length, SEC_FROM_VLC_TICK( length ) );
+    secstotimestr( psz_time, ( b_remainingTime && length )
+                             ? SEC_FROM_VLC_TICK( remaining ) : time );
 
     // compute the minimum size that will be required for the psz_length
     // and use it to enforce a minimal size to avoid "dancing" widgets
@@ -1088,8 +1089,7 @@ void TimeLabel::setDisplayPosition( float pos, int64_t t, int length )
 
 void TimeLabel::setDisplayPosition( float pos )
 {
-    int64_t time = pos * cachedLength * 1000000;
-    setDisplayPosition( pos, time, cachedLength );
+    setDisplayPosition( pos, pos * cachedLength, cachedLength );
 }
 
 void TimeLabel::toggleTimeDisplay()

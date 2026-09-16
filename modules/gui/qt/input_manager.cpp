@@ -432,7 +432,7 @@ void InputManager::UpdatePosition()
     int64_t i_length = var_GetInteger(  p_input , "length" );
     int64_t i_time = var_GetInteger(  p_input , "time");
     float f_pos = var_GetFloat(  p_input , "position" );
-    emit positionUpdated( f_pos, i_time, i_length / CLOCK_FREQ );
+    emit positionUpdated( f_pos, i_time, i_length );
 }
 
 void InputManager::UpdateNavigation()
@@ -967,7 +967,7 @@ void InputManager::setAtoB()
 }
 
 /* Function called regularly when in an AtoB loop */
-void InputManager::AtoBLoop( float, int64_t i_time, int )
+void InputManager::AtoBLoop( float, vlc_tick_t i_time, vlc_tick_t )
 {
     if( timeB && i_time >= timeB )
         var_SetInteger( p_mim->getInput(), "time" , timeA );

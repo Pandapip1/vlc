@@ -211,11 +211,11 @@ public slots:
     void setAtoB();
 
 private slots:
-    void AtoBLoop( float, int64_t, int );
+    void AtoBLoop( float, vlc_tick_t, vlc_tick_t );
 
 signals:
     /// Send new position, new time and new length
-    void positionUpdated( float , int64_t, int );
+    void positionUpdated( float, vlc_tick_t, vlc_tick_t );
     void remainingTimeChanged( bool );
     void seekRequested( float pos );
     void rateChanged( float );
