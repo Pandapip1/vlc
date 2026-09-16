@@ -21,7 +21,9 @@
 
 # Reads the CSV that "--aout-drift-trace" writes and draws it: the device's
 # reported delay and the drift against it, the four quantities the controller
-# is made of, and the steps, silences, jumps and run-outs in among them.
+# is made of, the steps upstream handed over, and where the discontinuity was
+# latched - which is the one thing that makes a correction unaccountable,
+# since a latch closes both drift thresholds to zero for the block after it.
 #
 # Core Perl only, so it runs wherever the build does.
 
@@ -99,6 +101,11 @@ which costs the player nothing unless it is set. Options:
   --height <n>
   --events <n>      how many steps and the like to list (default 20)
 
+A latched discontinuity closes both drift thresholds to zero for the reading
+that follows it, so the correction it then provokes has no explanation in the
+drift alone. The trace records every latch and what it was blamed on, and the
+report says how many blocks apart they fell and what each one cost.
+
   --kp <cents/s>    replay the controller with these gains instead of the
   --ki <cents/s2>   ones the run used, and draw both
   --slew <s>
@@ -153,6 +160,12 @@ sub read_trace
             extra => len ($f[10]),
             codec => ($f[11] ne '' ? $f[11] : undef),
             es    => len ($f[12]),
+            disc  => len ($f[13] // ''),
+            pts   => len ($f[14] // ''),
+            end   => len ($f[15] // ''),
+            samples => len ($f[16] // ''),
+            in_rate => len ($f[17] // ''),
+            since => len ($f[18] // ''),
         };
     }
     close $fh;
@@ -185,8 +198,16 @@ sub window
 
 # Events that carry the timeline, rather than a reading of it.
 my %BREAK = map { $_ => 1 }
-    qw(step flush restart jump silence start stop pause resume
+    qw(step declared flush restart jump silence start stop pause resume
        droplate dropearly);
+
+# A block that neither latched nor was read: it carries the arithmetic the
+# step test ran on and nothing else, so it interrupts nothing.
+sub quiet { return $_[0]{ev} eq 'block' }
+
+# Whether this block's own reading was judged with the thresholds collapsed:
+# either it found the latch already set, or it is what set it.
+sub zeroed { return $_[0]{disc} || defined $_[0]{since} }
 
 #
 #   What the numbers come to
@@ -236,6 +257,7 @@ sub rate_mismatch
 
     for my $r (@$rows)
     {
+        next if quiet ($r);
         if ($BREAK{$r->{ev}} || $r->{ev} eq 'excluded' || !defined $r->{drift})
         {
             $flush->(); @seg = (); next;
@@ -256,6 +278,10 @@ sub rate_mismatch
     return { ppm => $mean, sd => sqrt ($var / $w), segments => scalar @out };
 }
 
+# What a latch is blamed on. Everything else that sets it - a flush, a pause,
+# an inserted silence, the start of a stream - is named by its own event.
+my %BLAME = (step => 'step', declared => 'declared');
+
 sub stats
 {
     my ($hdr, $rows) = @_;
@@ -265,7 +291,7 @@ sub stats
         steps => [], counts => {},
     );
 
-    my (@drift, $bound_t, $last_t, $prev);
+    my (@drift, $bound_t, $last_t, $prev, $pending);
 
     for my $r (@$rows)
     {
@@ -277,6 +303,31 @@ sub stats
             $s{by_es}{($r->{codec} // '?') . ' ' . ($r->{es} // 0)}{n}++;
             $s{by_es}{($r->{codec} // '?') . ' ' . ($r->{es} // 0)}{sum}
                 += abs ($r->{extra} // 0);
+        }
+
+        if (defined $r->{pts})
+        {
+            $s{blocks}++;
+            $s{blocks_zeroed}++ if zeroed ($r);
+        }
+
+        if (defined $r->{drift})
+        {
+            $s{readings}++;
+            $s{zeroed}++ if $r->{disc};
+
+            # What the reading a latch put in front of the controller then
+            # did. This is the audible one: with both thresholds at zero any
+            # drift at all is answered by inserting silence or jumping.
+            if ($pending) { $s{after}{$r->{ev}}++; undef $pending }
+        }
+
+        if (defined $r->{since})
+        {
+            $s{latches}++;
+            $s{latch}{$BLAME{$r->{ev}} || 'elsewhere'}++;
+            push @{$s{since}}, $r->{since} if $BLAME{$r->{ev}};
+            $pending = $r;
         }
         push @drift, $r->{drift} if defined $r->{drift};
 
@@ -314,9 +365,25 @@ sub stats
 
     if (@{$s{steps}})
     {
-        my $t = 0;
-        $t += abs ($_->{extra} // 0) for @{$s{steps}};
+        my ($t, $alt, $prev_step) = (0, 0);
+        for my $r (@{$s{steps}})
+        {
+            my $v = $r->{extra} // 0;
+            $t += abs $v;
+            $alt++ if defined $prev_step && $prev_step * $v < 0;
+            $prev_step = $v;
+        }
         $s{step_mean} = $t / @{$s{steps}};
+        $s{step_alt} = $alt;
+    }
+
+    if ($s{since} && @{$s{since}})
+    {
+        my @v = sort { $a <=> $b } @{$s{since}};
+        $s{since_min} = $v[0];
+        $s{since_med} = $v[int (@v / 2)];
+        $s{since_1} = scalar grep { $_ == 1 } @v;
+        $s{since_2} = scalar grep { $_ == 2 } @v;
     }
 
     return \%s;
@@ -354,6 +421,8 @@ sub simulate
 
     for my $r (@$rows)
     {
+        next if quiet ($r);
+
         my $dt = defined $prev_t ? $r->{t} - $prev_t : 0;
         $prev_t = $r->{t};
 
@@ -462,6 +531,7 @@ sub add_noise
 
     for my $r (@$rows)
     {
+        next if quiet ($r);
         if ($BREAK{$r->{ev}} || !defined $r->{drift})
         {
             $r->{noise} = 0;
@@ -575,10 +645,10 @@ sub plot_text
 # One line of letters marking where each thing happened. Where two land in the
 # same column the one that matters more wins, so a seam is never hidden by the
 # reading that follows it.
-my @MARK = ( [ step => 'S' ], [ runout => 'R' ], [ jump => 'J' ],
-             [ silence => 'z' ], [ droplate => 'L' ], [ dropearly => 'E' ],
-             [ restart => 'X' ], [ flush => 'F' ], [ pause => 'P' ],
-             [ resume => 'p' ], [ excluded => 'x' ] );
+my @MARK = ( [ step => 'S' ], [ declared => 'D' ], [ runout => 'R' ],
+             [ jump => 'J' ], [ silence => 'z' ], [ droplate => 'L' ],
+             [ dropearly => 'E' ], [ restart => 'X' ], [ flush => 'F' ],
+             [ pause => 'P' ], [ resume => 'p' ], [ excluded => 'x' ] );
 my %MARK = map { @$_ } @MARK;
 my %RANK; $RANK{$MARK[$_][0]} = $#MARK - $_ for 0 .. $#MARK;
 
@@ -605,6 +675,11 @@ sub rail_text
 #
 #   The text report
 #
+
+# Which branch of aout_DecSynchronize the reading after a latch took. The
+# first two are heard; the rest are not.
+my %AFTER = (silence => 'silences', jump => 'jumps', settling => 'settling',
+             excluded => 'excluded', sync => 'corrected');
 
 sub ms { sprintf '%8.1f', $_[0] / 1000 }
 
@@ -647,9 +722,11 @@ sub fmt_stats
                       . "%+.3f cents, %.1f%% of the window at the bound",
                       $n->{det} // 0, $n->{i} // 0, $s->{bound_pc});
 
-    push @o, sprintf ("  timeline steps  %d  (%.1f/min, mean %.1f ms)",
+    push @o, sprintf ("  timeline steps  %d  (%.1f/min, mean %.1f ms, "
+                      . "%d of %d alternating in sign)",
                       scalar @{$s->{steps}}, $s->{steps_per_min},
-                      ($s->{step_mean} // 0) / 1000)
+                      ($s->{step_mean} // 0) / 1000, $s->{step_alt} // 0,
+                      scalar @{$s->{steps}} - 1)
         if @{$s->{steps}};
 
     for my $k (sort keys %{$s->{by_es} || {}})
@@ -660,6 +737,36 @@ sub fmt_stats
                           $s->{by_es}{$k}{sum} / $s->{by_es}{$k}{n} / 1000);
     }
 
+    if ($s->{latches})
+    {
+        push @o, sprintf ("  latched         %d times: %d by a step, %d "
+                          . "declared, %d elsewhere", $s->{latches},
+                          $s->{latch}{step} // 0, $s->{latch}{declared} // 0,
+                          $s->{latch}{elsewhere} // 0);
+        push @o, sprintf ("                  %d of %d blocks and %d of %d "
+                          . "readings judged with both drift thresholds "
+                          . "collapsed to zero", $s->{blocks_zeroed} // 0,
+                          $s->{blocks} // 0, $s->{zeroed} // 0,
+                          $s->{readings} // 0);
+    }
+
+    if (defined $s->{since_min})
+    {
+        push @o, sprintf ("  latch spacing   %d blocks at the closest, %d at "
+                          . "the median; %d on the very next block, %d every "
+                          . "other one", $s->{since_min}, $s->{since_med},
+                          $s->{since_1}, $s->{since_2});
+    }
+
+    if ($s->{after})
+    {
+        push @o, "  and then        "
+                 . join (', ', map { "$s->{after}{$_} $AFTER{$_}" }
+                               grep { $s->{after}{$_} }
+                               qw(silence jump settling excluded sync))
+                 . " on the reading it put in front of the controller";
+    }
+
     my @other = grep { $s->{counts}{$_} }
                 qw(excluded silence jump runout droplate dropearly flush
                    restart untimed uncorrected);
@@ -668,6 +775,26 @@ sub fmt_stats
         if @other;
 
     return @o;
+}
+
+# The reading each latch put in front of the controller, keyed by the latch's
+# own timestamp. With both thresholds at zero, whatever this says is what the
+# latch cost: a silence inserted, a jump taken, or nothing heard at all.
+sub next_readings
+{
+    my ($rows) = @_;
+    my (%out, $latch);
+
+    for my $r (@$rows)
+    {
+        if (defined $r->{drift} && $latch)
+        {
+            $out{$latch->{t}} = $r;
+            undef $latch;
+        }
+        $latch = $r if defined $r->{since};
+    }
+    return \%out;
 }
 
 sub report_text
@@ -685,13 +812,17 @@ sub report_text
 
     my @read = grep { defined $_->{drift} } @$rows;
 
-    push @o, "  drift: how far ahead of itself the output is running (ms, 'o')";
+    push @o, "  drift: how far ahead of itself the output is running (ms, "
+             . "'o'; '0' where a latched discontinuity had already collapsed "
+             . "both thresholds to zero)";
     push @o, plot_text (
         t0 => $t0, t1 => $t1, height => $opt{height},
         rules => [ 0, $hdr->{jump_us} / 1000, $hdr->{silence_us} / 1000 ],
         series => [
             { ch => 'o', pts => [ map { [ $_->{t}, $_->{drift} / 1000 ] }
                                   @read ] },
+            { ch => '0', pts => [ map { [ $_->{t}, $_->{drift} / 1000 ] }
+                                  grep { $_->{disc} } @read ] },
         ]);
     push @o, '';
 
@@ -704,6 +835,20 @@ sub report_text
                                   grep { defined $_->{delay} } @read ] },
         ]);
     push @o, '';
+
+    if (@{$s->{steps}})
+    {
+        push @o, "  timeline steps: what upstream handed over, signed (ms, "
+                 . "'S'). Each one latches the discontinuity.";
+        push @o, plot_text (
+            t0 => $t0, t1 => $t1, height => int ($opt{height} / 2) || 4,
+            rules => [ 0 ],
+            series => [
+                { ch => 'S', pts => [ map { [ $_->{t}, $_->{extra} / 1000 ] }
+                                      @{$s->{steps}} ] },
+            ]);
+        push @o, '';
+    }
 
     my @cmd = grep { defined $_->{cmd} } @$rows;
     my $sim;
@@ -734,22 +879,33 @@ sub report_text
 
     push @o, rail_text ($rows, $t0, $t1);
     push @o, (' ' x 10)
-             . "S step  z silence  J jump  R run-out  F flush  x excluded";
+             . "S step  D declared  z silence  J jump  R run-out  F flush  "
+             . "x excluded";
     push @o, sprintf ("%8.2f  %s%8.2f s", $t0 / 1e6,
                       ' ' x ($opt{width} - 10), $t1 / 1e6);
 
     if (@{$s->{steps}} && $opt{events})
     {
         push @o, '';
-        push @o, "  steps, as they were recognised";
+        push @o, "  steps, as they were recognised. The block before each "
+                 . "ended at its pts less the step; the arrow is what the "
+                 . "latch then cost.";
         my $n = 0;
+        my $next = next_readings ($rows);
         for my $r (@{$s->{steps}})
         {
             last if ++$n > $opt{events};
-            push @o, sprintf ("    %8.3f s  %-4s stream %-3d  %s of %.1f ms",
+            my $a = $next->{$r->{t}};
+            push @o, sprintf ("    %8.3f s  %-4s %-2d %s %8.3f ms after "
+                              . "%3d block%s  pts %.6f  -> %s",
                               $r->{t} / 1e6, $r->{codec} // '?', $r->{es} // 0,
                               ($r->{extra} // 0) > 0 ? 'hole   ' : 'overlap',
-                              abs ($r->{extra} // 0) / 1000);
+                              abs ($r->{extra} // 0) / 1000, $r->{since} // 0,
+                              ($r->{since} // 0) == 1 ? ' ' : 's',
+                              ($r->{pts} // 0) / 1e6,
+                              $a ? sprintf ('%s at %+.1f ms', $a->{ev},
+                                            ($a->{drift} // 0) / 1000)
+                                 : 'no reading');
         }
         push @o, sprintf ("    ... and %d more", @{$s->{steps}} - $opt{events})
             if @{$s->{steps}} > $opt{events};
@@ -819,9 +975,9 @@ sub svg_panel
     push @o, sprintf ('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" '
                       . 'fill="none" stroke="%s"/>', $x, $y, $w, $h,
                       $COL{grid});
-    push @o, sprintf ('<text x="%.1f" y="%.1f" font-size="13" font-weight="600"'
-                      . ' fill="%s">%s</text>', $x, $y - 28, $COL{ink},
-                      esc ($a{title}));
+    push @o, sprintf ('<text x="%.1f" y="%.1f" font-size="13" '
+                      . 'font-weight="600" fill="%s">%s</text>',
+                      $x, $y - 28, $COL{ink}, esc ($a{title}));
 
     my @note;
     push @note, 'tails drawn against the edge' if $clipped;
@@ -852,6 +1008,7 @@ sub svg_panel
     my $fmt = $a{fmt} || sub { sprintf '%.1f', $_[0] };
     for my $v ($lo, ($lo + $hi) / 2, $hi)
     {
+        $v = 0 if abs ($v) < 1e-9;
         push @o, sprintf ('<text x="%.1f" y="%.1f" font-size="10" fill="%s" '
                           . 'text-anchor="end">%s</text>',
                           $x - 6, $sy->($v) + 3, $COL{ink2},
@@ -862,6 +1019,29 @@ sub svg_panel
     for my $s (@{$a{series}})
     {
         next unless @{$s->{pts}};
+
+        # A step and a reading singled out are events, not a signal: joining
+        # them up would draw a slope between things that never moved.
+        if ($s->{mark})
+        {
+            for my $pt (@{$s->{pts}})
+            {
+                my ($xx, $yy) = ($sx->($pt->[0]), $sy->($pt->[1]));
+                push @o, sprintf ('<line x1="%.1f" y1="%.1f" x2="%.1f" '
+                                  . 'y2="%.1f" stroke="%s" '
+                                  . 'stroke-width="1.4"/>',
+                                  $xx, $sy->(0), $xx, $yy, $s->{col})
+                    if $s->{mark} eq 'stem';
+                push @o, sprintf ('<circle cx="%.1f" cy="%.1f" r="%s" '
+                                  . 'fill="%s"/>', $xx, $yy,
+                                  $s->{mark} eq 'stem' ? '2.4' : '2.8',
+                                  $s->{col});
+            }
+            push @label, { y => $sy->($s->{pts}[-1][1]), col => $s->{col},
+                           text => $s->{label} };
+            next;
+        }
+
         my $d = '';
         my $pen = 0;
         for my $pt (@{$s->{pts}})
@@ -901,10 +1081,18 @@ sub svg_panel
     my $lx = $x;
     for my $s (@{$a{series}})
     {
-        push @o, sprintf ('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" '
-                          . 'stroke="%s" stroke-width="2.2" %s/>',
-                          $lx, $y - 11, $lx + 14, $y - 11, $s->{col},
-                          $s->{dash} ? 'stroke-dasharray="4 2"' : '');
+        if ($s->{mark})
+        {
+            push @o, sprintf ('<circle cx="%.1f" cy="%.1f" r="2.8" '
+                              . 'fill="%s"/>', $lx + 7, $y - 11, $s->{col});
+        }
+        else
+        {
+            push @o, sprintf ('<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" '
+                              . 'stroke="%s" stroke-width="2.2" %s/>',
+                              $lx, $y - 11, $lx + 14, $y - 11, $s->{col},
+                              $s->{dash} ? 'stroke-dasharray="4 2"' : '');
+        }
         push @o, sprintf ('<text x="%.1f" y="%.1f" font-size="10" '
                           . 'fill="%s">%s</text>', $lx + 18, $y - 8,
                           $COL{ink2}, esc ($s->{label}));
@@ -950,7 +1138,8 @@ sub report_svg
     }
 
     my @text = fmt_stats ($hdr, $s);
-    my $H = 84 + 3 * ($ph + $gap) + 66 + 14 * @text + 24;
+    my $panels = @{$s->{steps}} ? 4 : 3;
+    my $H = 84 + $panels * ($ph + $gap) + 66 + 14 * @text + 24;
 
     my @o;
     push @o, sprintf ('<svg xmlns="http://www.w3.org/2000/svg" width="%d" '
@@ -979,6 +1168,9 @@ sub report_svg
         series => [
             { label => 'drift', col => $COL{drift}, wide => 1,
               pts => [ map { [ $_->{t}, $_->{drift} / 1000 ] } @read ] },
+            { label => 'thresholds zero', col => $COL{alarm}, mark => 'dot',
+              pts => [ map { [ $_->{t}, $_->{drift} / 1000 ] }
+                       grep { $_->{disc} } @read ] },
         ]);
     $y += $ph + $gap;
 
@@ -993,6 +1185,22 @@ sub report_svg
                        grep { defined $_->{delay} } @read ] },
         ]);
     $y += $ph + $gap;
+
+    if (@{$s->{steps}})
+    {
+        push @o, svg_panel (
+            x => $L, y => $y, w => $pw, h => $ph, t0 => $t0, t1 => $t1,
+            title => 'Timeline steps: what upstream handed over, signed (ms)'
+                     . ' - each one latches the discontinuity',
+            direct => 1,
+            rules => [ [ 0, '0', '' ] ],
+            series => [
+                { label => 'step', col => $COL{alarm}, mark => 'stem',
+                  pts => [ map { [ $_->{t}, $_->{extra} / 1000 ] }
+                           @{$s->{steps}} ] },
+            ]);
+        $y += $ph + $gap;
+    }
 
     push @o, svg_panel (
         x => $L, y => $y, w => $pw, h => $ph, t0 => $t0, t1 => $t1,
@@ -1041,8 +1249,8 @@ sub report_svg
     $y += 42;
 
     push @o, sprintf ('<text x="%d" y="%.1f" font-size="10" fill="%s">'
-                      . 'S step  z silence  J jump  R run-out  F flush  '
-                      . 'X restart</text>', $L, $y, $COL{ink2});
+                      . 'S step  D declared  z silence  J jump  R run-out  '
+                      . 'F flush  X restart</text>', $L, $y, $COL{ink2});
     $y += 22;
 
     for my $line (@text)
