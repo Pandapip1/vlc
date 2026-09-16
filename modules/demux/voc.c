@@ -60,6 +60,7 @@ typedef struct
 
     int64_t         i_block_start;
     int64_t         i_block_end;
+    vlc_tick_t      i_block_date;
 
     int64_t         i_loop_offset;
     unsigned        i_loop_count;
@@ -117,6 +118,7 @@ static int Open( vlc_object_t * p_this )
 
     date_Init( &p_sys->pts, 1, 1 );
     date_Set( &p_sys->pts, VLC_TICK_0 );
+    p_sys->i_block_date = date_Get( &p_sys->pts );
 
     es_format_Init( &p_sys->fmt, AUDIO_ES, 0 );
     p_demux->pf_demux = Demux;
@@ -431,6 +433,9 @@ static int ReadBlockHeader( demux_t *p_demux )
 
     p_sys->i_block_start = vlc_stream_Tell( p_demux->s );
     p_sys->i_block_end = p_sys->i_block_start + i_block_size;
+    /* Anchor of the byte offset to time conversion: the date is absolute
+     * over the whole stream, a byte offset only makes sense within a block. */
+    p_sys->i_block_date = date_Get( &p_sys->pts );
 
     if( i_block_size || p_sys->i_silence_countdown )
     {
@@ -530,9 +535,84 @@ static int Demux( demux_t *p_demux )
 /*****************************************************************************
  * Control:
  *****************************************************************************/
+/* Puts the pts accumulator back in sync with the offset the stream is at,
+ * using the same byte to time conversion as demux_vaControlHelper(). */
+static void ResyncDate( demux_t *p_demux )
+{
+    demux_sys_t *p_sys = p_demux->p_sys;
+    int64_t i_ofs = vlc_stream_Tell( p_demux->s ) - p_sys->i_block_start;
+
+    if( unlikely(i_ofs < 0 || p_sys->fmt.i_bitrate <= 0) )
+        return;
+
+    date_Set( &p_sys->pts, p_sys->i_block_date
+              + INT64_C(8000000) * i_ofs / p_sys->fmt.i_bitrate );
+}
+
 static int Control( demux_t *p_demux, int i_query, va_list args )
 {
     demux_sys_t *p_sys  = p_demux->p_sys;
+
+    switch( i_query )
+    {
+        case DEMUX_GET_TIME:
+            /* The helper derives the time from the offset within the current
+             * block, so it restarts from zero at every block header and does
+             * not move at all across an emulated silence, which takes no room
+             * in the stream. Report the timeline that is really emitted:
+             * SlaveDemux() and SlaveSeek() pace the external ES with this
+             * value and expect the stream absolute one. */
+            *va_arg( args, int64_t * ) = date_Get( &p_sys->pts );
+            return VLC_SUCCESS;
+
+        case DEMUX_SET_TIME:
+        {
+            int64_t i_time = va_arg( args, int64_t );
+            int64_t i_ofs;
+
+            /* Only the current block maps back to a byte offset: the size of
+             * a block is unknown until its header has been read. Clamp to it
+             * rather than let the helper seek past i_block_end, where the
+             * next Demux() would read audio data as a block header. The two
+             * answers stay consistent, as DEMUX_GET_TIME then tells where the
+             * seek really landed. */
+            if( p_sys->fmt.i_bitrate <= 0
+             || p_sys->fmt.audio.i_blockalign <= 0 )
+                return VLC_EGENERIC;
+
+            /* An emulated silence has no byte to seek to, and rewinding the
+             * date to where it started would replay it. */
+            if( p_sys->i_silence_countdown )
+                return VLC_EGENERIC;
+
+            i_ofs = ( i_time - p_sys->i_block_date )
+                  * p_sys->fmt.i_bitrate / INT64_C(8000000);
+            if( i_ofs > p_sys->i_block_end - p_sys->i_block_start )
+                i_ofs = p_sys->i_block_end - p_sys->i_block_start;
+            if( i_ofs < 0 )
+                i_ofs = 0;
+            i_ofs -= i_ofs % p_sys->fmt.audio.i_blockalign;
+
+            if( vlc_stream_Seek( p_demux->s, p_sys->i_block_start + i_ofs ) )
+                return VLC_EGENERIC;
+
+            ResyncDate( p_demux );
+            return VLC_SUCCESS;
+        }
+
+        case DEMUX_SET_POSITION:
+            /* The helper stays within the bounds it is given, so the offset
+             * it leaves the stream at is always inside the current block. */
+            if( demux_vaControlHelper( p_demux->s, p_sys->i_block_start,
+                                       p_sys->i_block_end,
+                                       p_sys->fmt.i_bitrate,
+                                       p_sys->fmt.audio.i_blockalign,
+                                       i_query, args ) )
+                return VLC_EGENERIC;
+
+            ResyncDate( p_demux );
+            return VLC_SUCCESS;
+    }
 
     return demux_vaControlHelper( p_demux->s, p_sys->i_block_start,
                                    p_sys->i_block_end,
