@@ -55,6 +55,7 @@ check_SCRIPTS = \
 EXTRA_PROGRAMS = \
 	test_libvlc_meta \
 	test_libvlc_media_list_player \
+	test_src_audio_output_drift \
 	test_src_input_stream_net \
 	$(NULL)
 
@@ -124,6 +125,8 @@ test_src_input_demux_repeat_CPPFLAGS = $(AM_CPPFLAGS) \
 test_src_input_demux_repeat_LDADD = $(LIBVLCCORE) $(LIBVLC)
 test_src_input_es_out_repeat_SOURCES = src/input/es_out_repeat.c
 test_src_audio_output_timeline_step_SOURCES = src/audio_output/timeline_step.c
+test_src_audio_output_drift_SOURCES = src/audio_output/drift.c
+test_src_audio_output_drift_LDADD = $(LIBVLC)
 test_src_input_stream_SOURCES = src/input/stream.c
 test_src_input_stream_LDADD = $(LIBVLCCORE) $(LIBVLC)
 test_src_input_stream_net_SOURCES = src/input/stream.c
@@ -160,6 +163,15 @@ test_modules_demux_ts_pes_SOURCES = modules/demux/ts_pes.c \
 
 checkall:
 	$(MAKE) check_PROGRAMS="$(check_PROGRAMS) $(EXTRA_PROGRAMS)" check
+
+# What the drift correction answers and what it refuses to answer, played end
+# to end against a simulated device. Minutes rather than milliseconds, and it
+# depends on a stream being kept fed in real time, so it is kept out of the
+# default suite and asked for by name.
+check-aout-drift: test_src_audio_output_drift$(EXEEXT)
+	$(extra_check_verbose) ./test_src_audio_output_drift$(EXEEXT)
+
+.PHONY: check-aout-drift
 
 FORCE:
 	@echo "Generated source cannot be phony. Go away." >&2
