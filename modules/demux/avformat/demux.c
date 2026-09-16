@@ -809,9 +809,21 @@ static int Demux( demux_t *p_demux )
     {
         /* Avoid EOF if av_read_frame returns AVERROR(EAGAIN) */
         if( i_av_ret == AVERROR(EAGAIN) )
-            return 1;
+            return VLC_DEMUXER_SUCCESS;
 
-        return 0;
+        /* Only the end of the stream is the end of the stream. Anything
+         * else - a read failure, data libavformat cannot make sense of -
+         * used to be handed to the core as a clean end, which made the
+         * item look like it had simply finished. */
+        if( i_av_ret != AVERROR_EOF && !vlc_stream_Eof( p_demux->s ) )
+        {
+            char errbuf[AV_ERROR_MAX_STRING_SIZE] = "";
+            av_strerror( i_av_ret, errbuf, sizeof(errbuf) );
+            msg_Err( p_demux, "av_read_frame failed: %s", errbuf );
+            return VLC_DEMUXER_EGENERIC;
+        }
+
+        return VLC_DEMUXER_EOF;
     }
     if( pkt.stream_index < 0 || (unsigned) pkt.stream_index >= p_sys->i_tracks )
     {
@@ -840,7 +852,7 @@ static int Demux( demux_t *p_demux )
         if( ( p_frame = block_Alloc( pkt.size + 3 ) ) == NULL )
         {
             av_packet_unref( &pkt );
-            return 0;
+            return VLC_DEMUXER_EGENERIC;
         }
         p_frame->p_buffer[0] = 0x20;
         p_frame->p_buffer[1] = 0x00;
@@ -852,7 +864,7 @@ static int Demux( demux_t *p_demux )
         if( ( p_frame = block_Alloc( pkt.size ) ) == NULL )
         {
             av_packet_unref( &pkt );
-            return 0;
+            return VLC_DEMUXER_EGENERIC;
         }
         memcpy( p_frame->p_buffer, pkt.data, pkt.size );
     }
