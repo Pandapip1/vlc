@@ -85,7 +85,13 @@ aout_drift_monitor_t *aout_DriftMonitorHold (audio_output_t *aout)
 
         aout_drift_monitor_t *none = NULL;
         if (atomic_compare_exchange_strong (&owner->monitor, &none, m))
+        {
+            /* What the controller is running with was published before this
+             * existed. The retune path is what publishes it, and re-reading
+             * settings that have not moved costs the stream nothing. */
+            atomic_store_explicit (&owner->retune, true, memory_order_relaxed);
             return m;
+        }
 
         /* Another reader got there first; take theirs. */
         aout_MonitorDestroy (m);
