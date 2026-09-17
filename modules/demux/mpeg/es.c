@@ -100,6 +100,8 @@ typedef struct
     int   i_lowpass;
 } lame_extra_t;
 
+#define XING_TOC_COUNT 100
+
 typedef struct
 {
     vlc_tick_t i_time;
@@ -153,6 +155,9 @@ struct demux_sys_t
         int i_bytes;
         int i_bitrate_avg;
         int i_frame_samples;
+        int i_rate;
+        uint8_t rgi_toc[XING_TOC_COUNT];
+        bool b_toc;
         lame_extra_t lame;
         bool b_lame;
     } xing;
@@ -422,6 +427,56 @@ static void PostSeekReset( demux_t *p_demux, vlc_tick_t i_time )
 }
 
 /*****************************************************************************
+ * SeekByXingTOC: byte offset and time of a Xing table of contents entry
+ *****************************************************************************
+ * The table holds, for each hundredth of the track, the byte offset that the
+ * frame there begins at, as a 256th of the stream size. Interpolating a byte
+ * offset from the average bitrate instead is only right for constant bitrate:
+ * on a VBR stream it lands wherever the mean happens to put it, and the time
+ * derived back out of it is wrong by however far the local bitrate is from
+ * the mean - seconds, on a stream whose quiet and loud passages differ.
+ *****************************************************************************/
+static int SeekByXingTOC( demux_t *p_demux, double f_pos,
+                          vlc_tick_t *pi_time, uint64_t *pi_offset )
+{
+    demux_sys_t *p_sys = p_demux->p_sys;
+
+    if( !p_sys->xing.b_toc || p_sys->xing.i_frames <= 0 ||
+        p_sys->xing.i_bytes <= 0 || p_sys->xing.i_frame_samples <= 0 ||
+        p_sys->xing.i_rate <= 0 ||
+        !p_sys->xing.rgi_toc[XING_TOC_COUNT - 1] )
+        return VLC_EGENERIC;
+
+    const int i_entry = VLC_CLIP( (int)( f_pos * XING_TOC_COUNT ),
+                                  0, XING_TOC_COUNT - 1 );
+    const int64_t i_frame = (int64_t) i_entry * p_sys->xing.i_frames /
+                            XING_TOC_COUNT;
+
+    *pi_time = CLOCK_FREQ * i_frame * p_sys->xing.i_frame_samples /
+               p_sys->xing.i_rate;
+    *pi_offset = (uint64_t) p_sys->xing.rgi_toc[i_entry] *
+                 p_sys->xing.i_bytes / 256;
+    return VLC_SUCCESS;
+}
+
+static int SeekTimeByXingTOC( demux_t *p_demux, vlc_tick_t *pi_time,
+                              uint64_t *pi_offset )
+{
+    demux_sys_t *p_sys = p_demux->p_sys;
+
+    if( *pi_time < 0 || p_sys->xing.i_frames <= 0 ||
+        p_sys->xing.i_frame_samples <= 0 || p_sys->xing.i_rate <= 0 )
+        return VLC_EGENERIC;
+
+    const int64_t i_samples = *pi_time * p_sys->xing.i_rate / CLOCK_FREQ;
+    const int64_t i_total = (int64_t) p_sys->xing.i_frames *
+                            p_sys->xing.i_frame_samples;
+
+    return SeekByXingTOC( p_demux, (double) i_samples / i_total,
+                          pi_time, pi_offset );
+}
+
+/*****************************************************************************
  * Control:
  *****************************************************************************/
 static int Control( demux_t *p_demux, int i_query, va_list args )
@@ -480,12 +535,34 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         }
 
         case DEMUX_SET_TIME:
+        case DEMUX_SET_POSITION:
         {
-            if( p_sys->mllt.p_bits )
+            vlc_tick_t i_time;
+            uint64_t i_pos;
+            int i_table;
+
+            va_list ap;
+            va_copy( ap, args ); /* the helper below still needs args */
+            if( i_query == DEMUX_SET_POSITION )
+                i_table = SeekByXingTOC( p_demux, va_arg( ap, double ),
+                                         &i_time, &i_pos );
+            else
             {
-                int64_t i_time = va_arg(args, int64_t);
-                uint64_t i_pos = SeekByMlltTable( p_demux, &i_time );
-                int i_ret = vlc_stream_Seek( p_demux->s, p_sys->i_stream_offset + i_pos );
+                i_time = va_arg( ap, int64_t );
+                if( p_sys->mllt.p_bits )
+                {
+                    i_pos = SeekByMlltTable( p_demux, &i_time );
+                    i_table = VLC_SUCCESS;
+                }
+                else
+                    i_table = SeekTimeByXingTOC( p_demux, &i_time, &i_pos );
+            }
+            va_end( ap );
+
+            if( i_table == VLC_SUCCESS )
+            {
+                i_ret = vlc_stream_Seek( p_demux->s,
+                                         p_sys->i_stream_offset + i_pos );
                 if( i_ret != VLC_SUCCESS )
                     return i_ret;
                 PostSeekReset( p_demux, i_time );
@@ -494,6 +571,7 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
             /* FIXME TODO: implement a high precision seek (with mp3 parsing)
              * needed for multi-input */
         }
+        /* fall through */
         default:
             i_ret = demux_vaControlHelper( p_demux->s, p_sys->i_stream_offset, -1,
                                             p_sys->i_bitrate_avg, 1, i_query,
@@ -794,6 +872,13 @@ static int MpgaCheckSync( const uint8_t *p_peek )
 #define MPGA_VERSION( h )   ( 1 - (((h)>>19)&0x01) )
 #define MPGA_MODE(h)        (((h)>> 6)&0x03)
 #define MPGA_LAYER(h)       ( 3 - (((h)>>17)&0x03) )
+static int MpgaGetSampleRate( uint32_t h )
+{
+    static const int pi_rate[2][3] = { { 44100, 48000, 32000 },
+                                       { 22050, 24000, 16000 } };
+    /* MpgaCheckSync() has rejected the reserved index and MPEG 2.5 */
+    return pi_rate[MPGA_VERSION( h )][((h)>>10)&0x03];
+}
 static int MpgaGetFrameSamples( uint32_t h )
 {
     const int i_layer = MPGA_LAYER( h );
@@ -1068,8 +1153,15 @@ static int MpgaInit( demux_t *p_demux )
         p_sys->xing.i_frames = MpgaXingGetDWBE( &p_xing, &i_xing, 0 );
     if( i_flags&0x02 )
         p_sys->xing.i_bytes = MpgaXingGetDWBE( &p_xing, &i_xing, 0 );
-    if( i_flags&0x04 ) /* TODO Support XING TOC to improve seeking accuracy */
-        MpgaXingSkip( &p_xing, &i_xing, 100 );
+    if( i_flags&0x04 )
+    {
+        if( i_xing >= XING_TOC_COUNT )
+        {
+            memcpy( p_sys->xing.rgi_toc, p_xing, XING_TOC_COUNT );
+            p_sys->xing.b_toc = true;
+        }
+        MpgaXingSkip( &p_xing, &i_xing, XING_TOC_COUNT );
+    }
     if( i_flags&0x08 )
     {
         /* FIXME: doesn't return the right bitrage average, at least
@@ -1082,6 +1174,7 @@ static int MpgaInit( demux_t *p_demux )
     if( p_sys->xing.i_frames > 0 && p_sys->xing.i_bytes > 0 )
     {
         p_sys->xing.i_frame_samples = MpgaGetFrameSamples( header );
+        p_sys->xing.i_rate = MpgaGetSampleRate( header );
         msg_Dbg( p_demux, "xing frames&bytes value present "
                  "(%d bytes, %d frames, %d samples/frame)",
                  p_sys->xing.i_bytes, p_sys->xing.i_frames,
