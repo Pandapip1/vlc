@@ -696,6 +696,16 @@ sub fmt_stats
                       . "slew %.4g s   bound +-%.4g cents",
                       $hdr->{kp}, $hdr->{ki}, $hdr->{slew}, $hdr->{max_cents});
 
+    # Worth saying plainly rather than leaving to be worked out from a plot of
+    # nothing: at a bound of zero the controller never runs, and every offset
+    # that would have been detuned away is answered by inserting silence or
+    # jumping ahead instead - which is heard.
+    push @o, "  NOT CORRECTING  the bound is zero, so nothing in this trace "
+             . "was corrected by detuning and every offset was spliced out "
+             . "instead. Set aout-max-resampling - and check vlcrc, which "
+             . "overrides the default."
+        if $hdr->{max_cents} <= 0;
+
     if ($s->{rate})
     {
         push @o, sprintf ("  device clock    %+.0f ppm  (+-%.0f over %d "
