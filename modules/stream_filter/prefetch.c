@@ -429,10 +429,13 @@ static int Open(vlc_object_t *obj)
     stream->pf_seek = Seek;
     stream->pf_control = Control;
 
-    vlc_stream_Control(stream->p_source, STREAM_CAN_SEEK, &sys->can_seek);
-    vlc_stream_Control(stream->p_source, STREAM_CAN_PAUSE, &sys->can_pause);
-    vlc_stream_Control(stream->p_source, STREAM_CAN_CONTROL_PACE,
-                       &sys->can_pace);
+    if (vlc_stream_Control(stream->p_source, STREAM_CAN_SEEK, &sys->can_seek))
+        sys->can_seek = false;
+    if (vlc_stream_Control(stream->p_source, STREAM_CAN_PAUSE, &sys->can_pause))
+        sys->can_pause = false;
+    if (vlc_stream_Control(stream->p_source, STREAM_CAN_CONTROL_PACE,
+                           &sys->can_pace))
+        sys->can_pace = false;
     if (vlc_stream_Control(stream->p_source, STREAM_GET_SIZE, &sys->size))
         sys->size = -1;
     vlc_stream_Control(stream->p_source, STREAM_GET_PTS_DELAY,
