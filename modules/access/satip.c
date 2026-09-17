@@ -562,6 +562,7 @@ static int satip_control(stream_t *access, int i_query, va_list args) {
     {
         case STREAM_CAN_CONTROL_PACE:
         case STREAM_CAN_SEEK:
+        case STREAM_CAN_FASTSEEK:
         case STREAM_CAN_PAUSE:
             pb_bool = va_arg(args, bool *);
             *pb_bool = false;
