@@ -26,7 +26,7 @@
  * as it is asked to. Neither end needs a file, a codec or hardware, and
  * neither can drift on its own.
  *
- * Five things the controller has to do, and this asserts all five, because
+ * Six things the controller has to do, and this asserts all six, because
  * each one alone is satisfied by a controller that is wrong in the others:
  *
  *   a step in the source timeline    leaves the command where it was, and is
@@ -36,6 +36,8 @@
  *                                    stays there while the error is there
  *   a device far too fast            pins, then inserts silence, and plays on
  *   a device far too slow            pins, then jumps ahead, and plays on
+ *   the offset a flush leaves        is put right where it happened, and
+ *                                    never reaches the command
  *
  * "Leaves the command where it was" is the property, not "no saturation":
  * saturation is what a chased seam looks like after seconds of chasing, while
@@ -124,6 +126,10 @@ struct run
     int64_t     seam_us;
     int         drift_ppm;
     unsigned    latency_ms;
+    const char *path;          /* a file to play, instead of the source above */
+    unsigned    seek_at_ms;    /* where in it to ask for a seek, 0 for none */
+    unsigned    seek_to_ms;    /* and where the seek is to */
+    int         desync_ms;     /* audio delay, to set the offset a flush leaves */
 
     /* seen */
     unsigned    holes;         /* "handed over a hole of" */
@@ -133,8 +139,10 @@ struct run
     unsigned    bound_left;    /* "back within its limit" */
     unsigned    silences;      /* "playing silence" */
     unsigned    jumps;         /* "jumping ahead" */
+    int64_t     jump_us;       /* the first one's size */
+    unsigned    jump_reading;  /* readings taken before it */
     unsigned    readings;      /* how many times the command was reported */
-    unsigned    seam_reading;  /* readings taken before the step was named */
+    unsigned    marked;        /* readings taken before the step or the seek */
     double      cents[512];    /* the command, once a second */
     uint64_t    played;        /* samples the device was handed */
 };
@@ -165,14 +173,14 @@ static void Logged( void *data, int level, const libvlc_log_t *ctx,
     {
         current->holes++;
         current->hole_us = v;
-        current->seam_reading = current->readings;
+        current->marked = current->readings;
     }
     else if( (p = strstr( line, "handed over an overlap of " )) != NULL
           && sscanf( p, "handed over an overlap of %lld us", &v ) == 1 )
     {
         current->overlaps++;
         current->hole_us = -v;
-        current->seam_reading = current->readings;
+        current->marked = current->readings;
     }
     else if( sscanf( line, "drift %lld us, detuning %lf cents", &v, &cents )
              == 2 )
@@ -190,10 +198,66 @@ static void Logged( void *data, int level, const libvlc_log_t *ctx,
         current->bound_left++;
     else if( strstr( line, "playing silence" ) != NULL )
         current->silences++;
-    else if( strstr( line, "jumping ahead" ) != NULL )
-        current->jumps++;
+    else if( (p = strstr( line, "too late (" )) != NULL
+          && strstr( line, "jumping ahead" ) != NULL
+          && sscanf( p, "too late (%lld)", &v ) == 1 )
+    {
+        if( current->jumps++ == 0 )
+        {
+            current->jump_us = v;
+            current->jump_reading = current->readings;
+        }
+    }
     else if( sscanf( line, "played %lld samples", &v ) == 1 )
         current->played = v;
+}
+
+static void put16( uint8_t *p, uint16_t v )
+{
+    p[0] = v; p[1] = v >> 8;
+}
+
+static void put32( uint8_t *p, uint32_t v )
+{
+    put16( p, v ); put16( p + 2, v >> 16 );
+}
+
+/* Something to seek in. A seek needs a demuxer and a file, which imem is
+ * neither, and what the file holds does not matter to the drift correction -
+ * only that it is raw PCM, so that a seek lands where it was asked with no
+ * codec delay between the two. */
+static void WriteFile( const char *psz_path, unsigned seconds )
+{
+    const uint32_t frames = seconds * RATE, data = frames * 4;
+    uint8_t hdr[44];
+    FILE *f = fopen( psz_path, "wb" );
+
+    assert( f != NULL );
+    memcpy( hdr, "RIFF", 4 );
+    put32( hdr + 4, 36 + data );
+    memcpy( hdr + 8, "WAVEfmt ", 8 );
+    put32( hdr + 16, 16 );          /* fmt chunk length */
+    put16( hdr + 20, 1 );           /* PCM */
+    put16( hdr + 22, 2 );           /* channels */
+    put32( hdr + 24, RATE );
+    put32( hdr + 28, RATE * 4 );    /* bytes per second */
+    put16( hdr + 32, 4 );           /* bytes per frame */
+    put16( hdr + 34, 16 );          /* bits per sample */
+    memcpy( hdr + 36, "data", 4 );
+    put32( hdr + 40, data );
+    size_t got = fwrite( hdr, 1, sizeof (hdr), f );
+
+    assert( got == sizeof (hdr) );
+
+    for( uint32_t n = 0; n < frames; n++ )
+    {
+        const int16_t v = (int16_t)(uint16_t)( n * 71 );
+        const int16_t frame[2] = { v, v };
+
+        got = fwrite( frame, 1, sizeof (frame), f );
+        assert( got == sizeof (frame) );
+    }
+    fclose( f );
 }
 
 static void Play( struct run *r )
@@ -212,7 +276,9 @@ static void Play( struct run *r )
     memset( src.buffer, 0, sizeof (src.buffer) );
 
     r->holes = r->overlaps = r->bound_hit = r->bound_left = 0;
-    r->silences = r->jumps = r->readings = r->seam_reading = 0;
+    r->silences = r->jumps = r->readings = r->marked = 0;
+    r->jump_us = 0;
+    r->jump_reading = 0;
     r->hole_us = 0;
     r->played = 0;
 
@@ -225,6 +291,7 @@ static void Play( struct run *r )
     snprintf( opt[3], sizeof (opt[3]), "--imem-samplerate=%u", RATE );
     snprintf( opt[4], sizeof (opt[4]), "--adummy-latency=%u", r->latency_ms );
     snprintf( opt[5], sizeof (opt[5]), "--adummy-drift=%d", r->drift_ppm );
+    snprintf( opt[6], sizeof (opt[6]), "--audio-desync=%d", r->desync_ms );
 
     argv[argc++] = "-vv";
     argv[argc++] = "--no-video";
@@ -234,7 +301,7 @@ static void Play( struct run *r )
     argv[argc++] = "--imem-codec=s16l";
     argv[argc++] = "--imem-channels=2";
     argv[argc++] = "--imem-id=1";
-    for( unsigned i = 0; i < 6; i++ )
+    for( unsigned i = 0; i < 7; i++ )
         argv[argc++] = opt[i];
     assert( argc <= sizeof (argv) / sizeof (argv[0]) );
 
@@ -244,7 +311,9 @@ static void Play( struct run *r )
     current = r;
     libvlc_log_set( vlc, Logged, NULL );
 
-    libvlc_media_t *md = libvlc_media_new_location( vlc, "imem://" );
+    libvlc_media_t *md = ( r->path != NULL )
+                         ? libvlc_media_new_path( vlc, r->path )
+                         : libvlc_media_new_location( vlc, "imem://" );
     assert( md != NULL );
 
     libvlc_media_player_t *mp = libvlc_media_player_new_from_media( md );
@@ -254,12 +323,25 @@ static void Play( struct run *r )
 
     /* Until the source has handed over everything and the output has drained
      * it, with a bound so that a hang is a failure rather than a wait. */
+    bool sought = false;
+
     for( unsigned i = 0; i < r->seconds * 40 + 400; i++ )
     {
         libvlc_state_t st = libvlc_media_player_get_state( mp );
 
         if( st == libvlc_Ended || st == libvlc_Error )
             break;
+
+        if( r->seek_at_ms != 0 && !sought
+         && libvlc_media_player_get_time( mp ) >= (libvlc_time_t)r->seek_at_ms )
+        {
+            /* The reading before the seek is what the ones after it are
+             * measured against, so the mark is taken here rather than off a
+             * log line the seek does not produce. */
+            r->marked = r->readings;
+            libvlc_media_player_set_time( mp, r->seek_to_ms );
+            sought = true;
+        }
         usleep( 50000 );
     }
 
@@ -289,35 +371,38 @@ static void report( const struct run *r )
 {
     fprintf( stderr,
              "%-22s holes %u (%"PRId64" us) overlaps %u  bound %u/%u  "
-             "silence %u jump %u  played %"PRIu64"\n  cents:",
+             "silence %u jump %u (%"PRId64" us at %u)  played %"PRIu64
+             "\n  cents:",
              r->name, r->holes, r->hole_us, r->overlaps, r->bound_hit,
-             r->bound_left, r->silences, r->jumps, r->played );
+             r->bound_left, r->silences, r->jumps, r->jump_us,
+             r->jump_reading, r->played );
 
     for( unsigned i = 0; i < r->readings; i++ )
         fprintf( stderr, "%s %+.3f",
-                 ( r->seam_reading != 0 && i == r->seam_reading ) ? " |" : "",
+                 ( r->marked != 0 && i == r->marked ) ? " |" : "",
                  r->cents[i] );
     fputc( '\n', stderr );
 }
 
-/* The command must not move for a step, so the reading taken just before the
- * step was named is the baseline and every reading after it is measured
- * against that one. Taking it from the log rather than from the clock is what
- * makes this independent of when a reading happened to fall. */
+/* The command must not move for a position error - a step in the source, or
+ * a seek - so the reading taken just before that happened is the baseline and
+ * every reading after it is measured against that one. Taking it from the log
+ * rather than from the clock is what makes this independent of when a reading
+ * happened to fall. */
 static void unmoved( const struct run *r, double tolerance )
 {
-    if( r->seam_reading < 2 || r->seam_reading >= r->readings )
+    if( r->marked < 2 || r->marked >= r->readings )
     {
-        complain( r, "the step was named at reading %u of %u, which leaves "
+        complain( r, "the mark fell at reading %u of %u, which leaves "
                   "nothing to compare either side of it",
-                  r->seam_reading, r->readings );
+                  r->marked, r->readings );
         return;
     }
 
-    const double base = r->cents[r->seam_reading - 1];
+    const double base = r->cents[r->marked - 1];
     double worst = 0.;
 
-    for( unsigned i = r->seam_reading; i < r->readings; i++ )
+    for( unsigned i = r->marked; i < r->readings; i++ )
     {
         double d = r->cents[i] - base;
 
@@ -328,8 +413,8 @@ static void unmoved( const struct run *r, double tolerance )
     }
 
     if( worst > tolerance )
-        complain( r, "the command moved %+.3f cents from %+.3f for a step, "
-                  "which is not evidence about the device's clock",
+        complain( r, "the command moved %+.3f cents from %+.3f for a position "
+                  "error, which is not evidence about the device's clock",
                   worst, base );
 }
 
@@ -530,6 +615,47 @@ int main( void )
                   slow.seconds );
     if( slow.played == 0 )
         complain( &slow, "nothing reached the device" );
+
+    /* 6. A seek. What a flush leaves behind is a position error the size of
+     * whatever the output was holding, and the first reading taken after it
+     * says so in one go, which no device clock can do. It must not reach the
+     * controller: the offset is put right where it happened and the command
+     * carries on from where it was.
+     *
+     * The discontinuity a flush latches is what keeps that reading out, and
+     * it was spent by the first block played whether or not that block had
+     * been able to take a reading - which at the head of a flush it has not,
+     * the output having nothing to time yet. Before that was fixed this case
+     * pinned at the bound for the rest of the stream.
+     *
+     * The audio delay is the instrument: it sets the offset the flush leaves
+     * to a known size, 100 ms here once the output's own queue is counted.
+     * That is inside the 120 ms the early path answers with silence of its
+     * own accord - so what is measured is this and not that - and well past
+     * the 60 ms that saturates 9 cents of resampling.
+     */
+    const char *path = "drift-seek.wav";
+
+    WriteFile( path, 12 );
+
+    struct run seek =
+    {
+        .name = "seek", .seconds = 12, .latency_ms = 50, .desync_ms = 90,
+        .path = path, .seek_at_ms = 4000, .seek_to_ms = 9000,
+    };
+    Play( &seek );
+    report( &seek );
+    unlink( path );
+
+    if( seek.marked == 0 )
+        complain( &seek, "never reached %u ms to seek from", seek.seek_at_ms );
+    if( seek.silences < 1 )
+        complain( &seek, "put none of the offset right where it happened" );
+    if( seek.bound_hit != 0 )
+        complain( &seek, "the correction hit its bound %u time(s) for a seek "
+                  "on a device that is running at its nominal rate",
+                  seek.bound_hit );
+    unmoved( &seek, 2.0 );
 
     /* Silence insertion adds samples and a jump drops them, so the two ends
      * fall either side of what a nominal device is handed. */
