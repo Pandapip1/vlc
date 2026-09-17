@@ -114,6 +114,7 @@ error:
     owner->sync.end = VLC_TICK_INVALID;
     owner->sync.source_end = VLC_TICK_INVALID;
     owner->sync.discontinuity = true;
+    owner->sync.discontinuity_fresh = true;
     owner->sync.skip = 0;
     owner->sync.handed = 0;
     owner->sync.skip_settles = 0;
@@ -359,7 +360,18 @@ static bool aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
     if (aout_OutputTimeGet (aout, &drift) != 0)
     {
         aout_Trace (owner, .event = "untimed");
-        return !aout_OutputIsTimed (aout);
+
+        /* An output with nothing to say yet is routine - most outputs
+         * answer this way whenever their own queueing has something
+         * outstanding, not just at the very start of a stream - and must
+         * not be mistaken for still being at the discontinuity itself.
+         * Only the one reading that might still find genuinely no data
+         * having reached the device withholds the answer; every miss
+         * after that is neutral. */
+        if (!aout_OutputIsTimed (aout) || !owner->sync.discontinuity_fresh)
+            return true;
+        owner->sync.discontinuity_fresh = false;
+        return false;
     }
 
     const vlc_tick_t delay = drift;
@@ -411,6 +423,9 @@ static bool aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
         if (!owner->sync.discontinuity)
             msg_Warn (aout, "playback way too early (%"PRId64"): "
                       "playing silence", drift);
+        else
+            msg_Dbg (aout, "playback too early (%"PRId64"): "
+                     "playing silence", drift);
         aout_DecSilence (aout, -drift, dec_pts);
         aout_Trace (owner, .event = "silence", .reading = true, .latch = true,
                     .drift = drift, .delay = delay, .extra = -drift);
@@ -615,6 +630,8 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
     /* A step gets the same treatment as a declared one: the offset either
      * side of it is not drift, and it is put right where it is rather than
      * worked off by running the whole stream off pitch. */
+    if (!latched && (declared || step != 0))
+        owner->sync.discontinuity_fresh = true;
     owner->sync.discontinuity = latched || declared || step != 0;
 
     if (atomic_exchange(&owner->vp.update, false))
@@ -754,6 +771,7 @@ void aout_DecFlush (audio_output_t *aout, bool wait)
      * catch it up. The correction accumulated so far describes the device and
      * is still right, so it is kept. */
     owner->sync.discontinuity = true;
+    owner->sync.discontinuity_fresh = true;
     owner->sync.update = owner->sync.handed;
     aout_OutputUnlock (aout);
 }

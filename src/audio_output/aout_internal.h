@@ -92,6 +92,15 @@ typedef struct
         float drift_slew; /**< Time constant the detune follows the controller */
         bool drift_bound; /**< Correction is pinned at the bound */
         bool discontinuity;
+        /** Whether this discontinuity has not yet had the one reading that
+         * may find the output still unable to answer at all. Set whenever
+         * discontinuity newly latches, consumed by the first untimed miss
+         * that follows: an output module failing to answer is routine
+         * (e.g. its own queueing has something outstanding) and must not
+         * re-arm this past that one grace reading, or an ordinary miss
+         * anywhere in the stream keeps the latch - and with it the
+         * collapsed drift thresholds - alive indefinitely. */
+        bool discontinuity_fresh;
     } sync;
 
     /** The drift trace, or NULL - which is what it is unless somebody asked,
