@@ -40,12 +40,12 @@ TimeTooltip::TimeTooltip( QWidget *parent ) :
      * part of is a space we do own. */
 
     /* A surface of our own, so that we stack above an embedded video, which
-     * has one and would otherwise cover us. Not on wayland: a child window
-     * there is never given anything to draw with - Qt paints every widget
-     * into the window's own surface - so the surface buys no stacking and
-     * nothing takes its pixels down. The bubble's shape comes from a mask
-     * rather than from a translucent background, which needs a compositor and
-     * leaves nothing on the screen without one. */
+     * has one and would otherwise cover us. Not on wayland: there the surface
+     * is never given a buffer - Qt draws every widget into the window's own
+     * one - so it buys no stacking, and hiding it leaves the bubble's pixels
+     * behind in the window that really drew them. The bubble's shape comes
+     * from a mask rather than from a translucent background, which needs a
+     * compositor and leaves nothing on the screen without one. */
     if( !qApp->platformName().startsWith( QLatin1String( "wayland" ),
                                           Qt::CaseInsensitive ) )
         setAttribute( Qt::WA_NativeWindow );
@@ -58,6 +58,30 @@ TimeTooltip::TimeTooltip( QWidget *parent ) :
 
     // By default the widget is unintialized and should not be displayed
     resize( 0, 0 );
+}
+
+/**
+ * Is this part of the window drawn by a window of its own?
+ *
+ * An embedded video has one, and only that window ever paints there: what we
+ * draw over it is never painted again, so the bubble would be left on the
+ * screen after it goes. A bubble that has a window of its own - everywhere
+ * but wayland, where such a window is never given anything to draw with -
+ * stacks above and has nothing to fear.
+ **/
+bool TimeTooltip::drawnElsewhere( const QWidget *space, const QRect& box ) const
+{
+    if( testAttribute( Qt::WA_NativeWindow ) )
+        return false;
+
+    const QPoint corners[] = { box.topLeft(), box.topRight(),
+                               box.bottomLeft(), box.bottomRight() };
+    for( const QPoint& corner : corners )
+        for( const QWidget *w = space->childAt( corner );
+             w != NULL && w != space; w = w->parentWidget() )
+            if( w->internalWinId() != 0 )
+                return true;
+    return false;
 }
 
 void TimeTooltip::adjustPosition()
@@ -87,14 +111,16 @@ void TimeTooltip::adjustPosition()
 
     /* Keep the bubble inside the window it is drawn in. If the slider sits so
      * close to the top of that window that the bubble does not fit above it,
-     * hang it under the slider instead rather than let it be clipped away. */
+     * or the room above it belongs to a window of its own, hang it under the
+     * slider instead rather than let it be clipped away or left behind. */
     bool above = true;
     const QWidget *parent = parentWidget();
     if( parent != NULL )
     {
         position.setX( qBound( 0, position.x(),
                                qMax( 0, parent->width() - size.width() ) ) );
-        if( position.y() < 0 )
+        if( position.y() < 0 ||
+            drawnElsewhere( parent, QRect( position, size ) ) )
         {
             above = false;
             position.setY( qBound( 0, mAnchor.bottom() + TIP_HEIGHT / 2,

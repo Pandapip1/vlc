@@ -44,6 +44,7 @@ protected:
     void paintEvent( QPaintEvent * ) Q_DECL_OVERRIDE;
 
 private:
+    bool drawnElsewhere( const QWidget *space, const QRect& box ) const;
     void adjustPosition();
     void buildPath();
     QPoint mTarget;
