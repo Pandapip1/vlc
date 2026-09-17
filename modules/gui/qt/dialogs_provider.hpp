@@ -134,6 +134,7 @@ public slots:
     void extendedDialog();
     void synchroDialog();
     void messagesDialog();
+    void driftDialog();
     void sendKey( int key );
 #ifdef ENABLE_VLM
     void vlmDialog();

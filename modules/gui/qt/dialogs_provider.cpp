@@ -43,6 +43,7 @@
 #include "dialogs/preferences.hpp"
 #include "dialogs/mediainfo.hpp"
 #include "dialogs/messages.hpp"
+#include "dialogs/drift.hpp"
 #include "dialogs/extended.hpp"
 #include "dialogs/vlm.hpp"
 #include "dialogs/sout.hpp"
@@ -94,6 +95,7 @@ DialogsProvider::~DialogsProvider()
     PlaylistDialog::killInstance();
     MediaInfoDialog::killInstance();
     MessagesDialog::killInstance();
+    DriftDialog::killInstance();
     BookmarksDialog::killInstance();
 #ifdef ENABLE_VLM
     VLMDialog::killInstance();
@@ -278,6 +280,11 @@ void DialogsProvider::synchroDialog()
 void DialogsProvider::messagesDialog()
 {
     MessagesDialog::getInstance( p_intf )->toggleVisible();
+}
+
+void DialogsProvider::driftDialog()
+{
+    DriftDialog::getInstance( p_intf )->toggleVisible();
 }
 
 void DialogsProvider::gotoTimeDialog()
