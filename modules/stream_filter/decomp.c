@@ -260,8 +260,9 @@ static int Open (stream_t *stream, const char *path)
     vlc_stream_Control(stream->p_source, STREAM_CAN_PAUSE, &p_sys->can_pause);
     vlc_stream_Control(stream->p_source, STREAM_CAN_CONTROL_PACE,
                        &p_sys->can_pace);
-    vlc_stream_Control(stream->p_source, STREAM_GET_PTS_DELAY,
-                       &p_sys->pts_delay);
+    if (vlc_stream_Control(stream->p_source, STREAM_GET_PTS_DELAY,
+                          &p_sys->pts_delay))
+        p_sys->pts_delay = DEFAULT_PTS_DELAY;
 
     /* I am not a big fan of the pyramid style, but I cannot think of anything
      * better here. There are too many failure cases. */

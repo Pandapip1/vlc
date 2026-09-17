@@ -438,8 +438,9 @@ static int Open(vlc_object_t *obj)
         sys->can_pace = false;
     if (vlc_stream_Control(stream->p_source, STREAM_GET_SIZE, &sys->size))
         sys->size = -1;
-    vlc_stream_Control(stream->p_source, STREAM_GET_PTS_DELAY,
-                       &sys->pts_delay);
+    if (vlc_stream_Control(stream->p_source, STREAM_GET_PTS_DELAY,
+                          &sys->pts_delay))
+        sys->pts_delay = DEFAULT_PTS_DELAY;
     if (vlc_stream_Control(stream->p_source, STREAM_GET_CONTENT_TYPE,
                            &sys->content_type))
         sys->content_type = NULL;
