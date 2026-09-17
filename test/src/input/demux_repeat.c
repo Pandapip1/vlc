@@ -297,6 +297,10 @@ static const struct
     { "tone.mp3",  "mpga"     },
     { "tone.ogg",  "ogg"      },
     { "tone.opus", "ogg"      },
+    /* Two complete ogg streams one after the other, which is all a chained
+     * file is. The second group's timeline carries on from the first, so a
+     * repeat has to put it back where it began. */
+    { "chain.opus", "ogg"     },
     { "tone.m4a",  "mp4"      },
     { "tone.mka",  "mkv"      },
     { "tone.avi",  "avi"      },
