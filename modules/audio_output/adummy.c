@@ -338,6 +338,11 @@ static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
 {
     struct aout_sys_t *sys = aout->sys;
 
+    /* The instant the answer is measured from, taken by the caller: reading
+     * the clock again here would put the length of the call into what it
+     * makes of the answer. */
+    const vlc_tick_t now = aout_TimeReference( aout );
+
     if( sys->i_start == VLC_TICK_INVALID || sys->i_rate == 0 )
         return -1; /* nothing has been handed over yet */
 
@@ -351,14 +356,14 @@ static int TimeGet(audio_output_t *aout, vlc_tick_t *restrict delay)
 
         TRACE( sys, "time", 0, NULL, &i_jitter, &i_answer, 0 );
 
-        *delay = sys->i_origin + i_answer - mdate();
+        *delay = sys->i_origin + i_answer - now;
         return 0;
     }
 
     const vlc_tick_t i_handed =
         (vlc_tick_t)( sys->i_written * CLOCK_FREQ / sys->i_rate );
 
-    vlc_tick_t i_queued = i_handed - Drained( sys, mdate() );
+    vlc_tick_t i_queued = i_handed - Drained( sys, now );
 
     if( i_queued < 0 )
     {

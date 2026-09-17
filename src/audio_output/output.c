@@ -602,11 +602,23 @@ void aout_OutputDelete (audio_output_t *aout)
 
 int aout_OutputTimeGet (audio_output_t *aout, vlc_tick_t *delay)
 {
+    aout_owner_t *owner = aout_owner (aout);
+
     aout_OutputAssertLocked (aout);
 
     if (aout->time_get == NULL)
         return -1;
+
+    /* Taken here rather than by the caller once the answer is back: the two
+     * readings would be a call apart, and the answer is a delay from one of
+     * them. */
+    owner->time_ref = mdate ();
     return aout->time_get (aout, delay);
+}
+
+vlc_tick_t aout_TimeReference (audio_output_t *aout)
+{
+    return aout_owner (aout)->time_ref;
 }
 
 int aout_OutputLatencyGet (audio_output_t *aout, vlc_tick_t *latency)

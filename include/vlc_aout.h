@@ -89,6 +89,17 @@
 VLC_API void aout_TraceEvent(audio_output_t *, const char *event,
                              int64_t value);
 
+/**
+ * The instant the delay an output is being asked for is measured from.
+ *
+ * An output that knows when a sample will be heard, rather than how much it
+ * still holds, has to subtract a date to answer in the delay the caller asks
+ * for, and the caller adds one straight back on. Reading the clock twice for
+ * that puts the length of the call into the drift; this is the one reading
+ * both ends use. Only valid from within the time_get callback.
+ */
+VLC_API vlc_tick_t aout_TimeReference(audio_output_t *);
+
 /** Highest value accepted for "aout-max-resampling" (a whole tone) */
 #define AOUT_MAX_RESAMPLING_CENTS_MAX   200
 

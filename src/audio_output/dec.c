@@ -310,10 +310,11 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
 
     const vlc_tick_t delay = drift;
 
-    /* The only reading of the clock the correction takes: where the device
-     * says it has got to is answered against the date the block was due, and
-     * everything else here is timed on the audio itself. */
-    drift += mdate () - dec_pts;
+    /* The only reading of the clock the correction takes, and the one the
+     * output answered against: where the device says it has got to, against
+     * the date the block was due. Everything else here is timed on the audio
+     * itself. */
+    drift += aout_TimeReference (aout) - dec_pts;
 
     /* Late audio output.
      * This can happen due to insufficient caching, scheduling jitter
