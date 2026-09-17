@@ -185,6 +185,13 @@ static vlc_tick_t ClockSystemToStream( input_clock_t *, vlc_tick_t i_system );
 
 static vlc_tick_t ClockGetTsOffset( input_clock_t * );
 
+static void ClockLateReset( input_clock_t *cl )
+{
+    for( int i = 0; i < INPUT_CLOCK_LATE_COUNT; i++ )
+        cl->late.pi_value[i] = 0;
+    cl->late.i_index = 0;
+}
+
 /*****************************************************************************
  * input_clock_New: create a new clock
  *****************************************************************************/
@@ -208,9 +215,7 @@ input_clock_t *input_clock_New( int i_rate )
     cl->i_next_drift_update = VLC_TICK_INVALID;
     AvgInit( &cl->drift, 10 );
 
-    cl->late.i_index = 0;
-    for( int i = 0; i < INPUT_CLOCK_LATE_COUNT; i++ )
-        cl->late.pi_value[i] = 0;
+    ClockLateReset( cl );
 
     cl->i_rate = i_rate;
     cl->i_pts_delay = 0;
@@ -337,6 +342,7 @@ void input_clock_Reset( input_clock_t *cl )
     cl->ref = clock_point_Create( VLC_TICK_INVALID, VLC_TICK_INVALID );
     cl->b_has_external_clock = false;
     cl->i_ts_max = VLC_TICK_INVALID;
+    ClockLateReset( cl );
 
     vlc_mutex_unlock( &cl->lock );
 }
@@ -548,9 +554,7 @@ void input_clock_SetJitter( input_clock_t *cl,
     for( int i = 0; i < INPUT_CLOCK_LATE_COUNT; i++ )
         pi_late[i] = __MAX( cl->late.pi_value[(cl->late.i_index + 1 + i)%INPUT_CLOCK_LATE_COUNT] - i_delay_delta, 0 );
 
-    for( int i = 0; i < INPUT_CLOCK_LATE_COUNT; i++ )
-        cl->late.pi_value[i] = 0;
-    cl->late.i_index = 0;
+    ClockLateReset( cl );
 
     for( int i = 0; i < INPUT_CLOCK_LATE_COUNT; i++ )
     {
