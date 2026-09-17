@@ -40,12 +40,15 @@ TimeTooltip::TimeTooltip( QWidget *parent ) :
      * part of is a space we do own. */
 
     /* A surface of our own, so that we stack above an embedded video, which
-     * has one and would otherwise cover us. It is also what makes us a
-     * subsurface on wayland, which the client positions relative to its
-     * parent - the one placement wayland does allow. The bubble's shape comes
-     * from a mask rather than from a translucent background, which needs a
-     * compositor and leaves nothing on the screen without one. */
-    setAttribute( Qt::WA_NativeWindow );
+     * has one and would otherwise cover us. Not on wayland: a child window
+     * there is never given anything to draw with - Qt paints every widget
+     * into the window's own surface - so the surface buys no stacking and
+     * nothing takes its pixels down. The bubble's shape comes from a mask
+     * rather than from a translucent background, which needs a compositor and
+     * leaves nothing on the screen without one. */
+    if( !qApp->platformName().startsWith( QLatin1String( "wayland" ),
+                                          Qt::CaseInsensitive ) )
+        setAttribute( Qt::WA_NativeWindow );
     setAttribute( Qt::WA_TransparentForMouseEvents );
 
     // Inherit from the system default font size -5
