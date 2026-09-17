@@ -93,14 +93,20 @@ struct demux_sys_t
     uint64_t    i_bytes;
     int64_t     i_bitrate_avg;
     bool        b_seeked;
+    /* A time seek asked for before anything had been read, which is what
+     * --start-time does. There is no bitrate yet to turn it into a byte
+     * position, so it is held here and answered from the first Demux(). */
+    vlc_tick_t  i_start_time;
 
     decoder_t *p_packetizer;
 };
 
 static int Demux( demux_t * );
 static int Control( demux_t *, int, va_list );
+static void PostSeekReset( demux_t *, vlc_tick_t );
 
 #define H26X_PACKET_SIZE 2048
+#define H26X_PROBE_LENGTH (2 * CLOCK_FREQ)
 #define H26X_PEEK_CHUNK  (H26X_PACKET_SIZE * 4)
 #define H26X_MIN_PEEK    (4 + 7 + 10)
 #define H26X_MAX_PEEK    (H26X_PEEK_CHUNK * 8) /* max data to check */
@@ -370,6 +376,7 @@ static int GenericOpen( demux_t *p_demux, const char *psz_module,
     p_sys->i_bytes = 0;
     p_sys->i_bitrate_avg = 0;
     p_sys->b_seeked = false;
+    p_sys->i_start_time = VLC_TICK_INVALID;
 
     /* Load the mpegvideo packetizer */
     es_format_Init( &fmt, VIDEO_ES, i_codec );
@@ -423,6 +430,32 @@ static void Close( vlc_object_t * p_this )
     free( p_sys );
 }
 
+/* Where in the bytes the held seek wants to be, measured with the bitrate the
+ * probe has just established. */
+static void StartSeek( demux_t *p_demux )
+{
+    demux_sys_t *p_sys = p_demux->p_sys;
+    vlc_tick_t i_time = p_sys->i_start_time;
+    uint64_t i_pos = p_sys->i_bitrate_avg * i_time / INT64_C(8000000);
+    uint64_t i_size = stream_Size( p_demux->s );
+
+    p_sys->i_start_time = VLC_TICK_INVALID;
+    if( i_size > 0 && i_pos >= i_size )
+        i_pos = i_size - 1;
+
+    if( p_sys->i_bitrate_avg <= 0 || vlc_stream_Seek( p_demux->s, i_pos ) )
+        i_time = 0;
+    else
+        i_time = INT64_C(8000000) * vlc_stream_Tell( p_demux->s )
+                 / p_sys->i_bitrate_avg;
+
+    msg_Dbg( p_demux, "starting at %" PRId64 " us, byte %" PRIu64
+             " of an estimated %" PRId64 " bit/s",
+             i_time, i_pos, p_sys->i_bitrate_avg );
+
+    PostSeekReset( p_demux, i_time );
+}
+
 /*****************************************************************************
  * Demux: reads and demuxes data packets
  *****************************************************************************
@@ -433,6 +466,10 @@ static int Demux( demux_t *p_demux)
     demux_sys_t *p_sys = p_demux->p_sys;
     block_t *p_block_in, *p_block_out;
     bool b_eof = false;
+    /* Nothing goes out while a held seek is being measured for: the stream is
+     * about to be somewhere else, and what is read on the way there was never
+     * asked for. */
+    const bool b_probing = p_sys->i_start_time != VLC_TICK_INVALID;
 
     p_block_in = vlc_stream_Block( p_demux->s, H26X_PACKET_SIZE );
     if( p_block_in == NULL )
@@ -500,11 +537,16 @@ static int Demux( demux_t *p_demux)
             const vlc_tick_t i_frame_length = p_block_out->i_length;
             p_sys->i_bytes += p_block_out->i_buffer;
 
-            /* first output */
-            if( date_Get( &p_sys->output_dts ) == VLC_TICK_0 )
-                es_out_SetPCR( p_demux->out, date_Get( &p_sys->output_dts ) );
+            if( b_probing )
+                block_Release( p_block_out );
+            else
+            {
+                /* first output */
+                if( date_Get( &p_sys->output_dts ) == VLC_TICK_0 )
+                    es_out_SetPCR( p_demux->out, date_Get( &p_sys->output_dts ) );
 
-            es_out_Send( p_demux->out, p_sys->p_es, p_block_out );
+                es_out_Send( p_demux->out, p_sys->p_es, p_block_out );
+            }
 
             vlc_tick_t pcr = b_eof ? dts : date_Get( &p_sys->output_dts );
 
@@ -523,7 +565,8 @@ static int Demux( demux_t *p_demux)
                 }
             }
 
-            es_out_SetPCR( p_demux->out, pcr );
+            if( !b_probing )
+                es_out_SetPCR( p_demux->out, pcr );
             p_sys->i_pcr = pcr;
 
             /* What has gone out over how long it lasts is the bitrate, which
@@ -536,6 +579,11 @@ static int Demux( demux_t *p_demux)
             p_block_out = p_next;
         }
     }
+
+    if( b_probing &&
+        ( b_eof || date_Get( &p_sys->output_dts ) - VLC_TICK_0 >= H26X_PROBE_LENGTH ) )
+        StartSeek( p_demux );
+
     return (b_eof) ? VLC_DEMUXER_EOF : VLC_DEMUXER_SUCCESS;
 }
 
@@ -593,7 +641,15 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
              * says where in the bytes a time is. Without one a time seek
              * cannot be answered at all; a position seek still can. */
             if( i_query == DEMUX_SET_TIME && p_sys->i_bitrate_avg <= 0 )
-                return VLC_EGENERIC;
+            {
+                /* --start-time is issued before the first Demux(), when there
+                 * is nothing to measure a bitrate over yet. Hold it rather
+                 * than refuse it, and let Demux() answer it. */
+                if( p_sys->i_bytes > 0 )
+                    return VLC_EGENERIC;
+                p_sys->i_start_time = va_arg( args, int64_t );
+                return VLC_SUCCESS;
+            }
 
             int i_ret = demux_vaControlHelper( p_demux->s, 0, -1,
                                                p_sys->i_bitrate_avg, 1,
