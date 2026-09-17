@@ -663,6 +663,17 @@ vlc_tick_t aout_TimeReference (audio_output_t *aout)
     return aout_owner (aout)->time_ref;
 }
 
+/**
+ * Whether the output can say where it is at all, as opposed to not being
+ * able to say so yet.
+ */
+bool aout_OutputIsTimed (audio_output_t *aout)
+{
+    aout_OutputAssertLocked (aout);
+
+    return aout->time_get != NULL;
+}
+
 int aout_OutputLatencyGet (audio_output_t *aout, vlc_tick_t *latency)
 {
     aout_OutputAssertLocked (aout);
