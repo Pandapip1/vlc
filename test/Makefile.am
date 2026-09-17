@@ -26,6 +26,7 @@ check_PROGRAMS = \
 	test_src_config_chain \
 	test_src_misc_variables \
 	test_src_input_demux_repeat \
+	test_src_input_demux_seek_time \
 	test_src_input_es_out_repeat \
 	test_src_audio_output_timeline_step \
 	test_src_input_stream \
@@ -65,6 +66,7 @@ EXTRA_DIST = \
 	samples/certs/certkey.pem \
 	samples/empty.voc \
 	samples/repeat \
+	samples/seek \
 	samples/image.jpg \
 	samples/subitems \
 	samples/slaves \
@@ -126,6 +128,12 @@ test_src_input_demux_repeat_CPPFLAGS = $(AM_CPPFLAGS) \
 	-DTOP_BUILDDIR=\"$$(cd "$(top_builddir)"; pwd)\" \
 	-DTOP_SRCDIR=\"$$(cd "$(top_srcdir)"; pwd)\"
 test_src_input_demux_repeat_LDADD = $(LIBVLCCORE) $(LIBVLC)
+test_src_input_demux_seek_time_SOURCES = src/input/demux_seek_time.c \
+	src/input/common.c src/input/common.h
+test_src_input_demux_seek_time_CPPFLAGS = $(AM_CPPFLAGS) \
+	-DTOP_BUILDDIR=\"$$(cd "$(top_builddir)"; pwd)\" \
+	-DTOP_SRCDIR=\"$$(cd "$(top_srcdir)"; pwd)\"
+test_src_input_demux_seek_time_LDADD = $(LIBVLCCORE) $(LIBVLC)
 test_src_input_es_out_repeat_SOURCES = src/input/es_out_repeat.c
 test_src_audio_output_timeline_step_SOURCES = src/audio_output/timeline_step.c
 test_src_audio_output_drift_SOURCES = src/audio_output/drift.c
