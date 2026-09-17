@@ -247,6 +247,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
      * row written before the first one - by an output reporting something as
      * it starts - does not read uninitialised state. */
     memset (&owner->sync, 0, sizeof (owner->sync));
+    aout_MonitorInit (aout);
     aout_TraceOpen (aout);
 
     /* Audio output module callbacks */
@@ -434,6 +435,7 @@ static void aout_Destructor (vlc_object_t *obj)
     audio_output_t *aout = (audio_output_t *)obj;
     aout_owner_t *owner = aout_owner (aout);
 
+    aout_MonitorClose (aout);
     vlc_mutex_destroy (&owner->dev.lock);
     for (aout_dev_t *dev = owner->dev.list, *next; dev != NULL; dev = next)
     {

@@ -92,6 +92,10 @@ typedef struct
      * and the only thing the audio path then pays for the whole instrument. */
     struct aout_trace *trace;
 
+    /** The live monitor, or NULL until an interface asks for one. Counted, so
+     * that it may be read after the output it belongs to has gone. */
+    _Atomic(aout_drift_monitor_t *) monitor;
+
     int initial_stereo_mode; /**< Initial stereo mode set by options */
 
     /* The elementary stream feeding this output, so that a fault in its
@@ -210,16 +214,63 @@ void aout_TraceStream (audio_output_t *, float max);
 void aout_TraceClose (audio_output_t *);
 void aout_TraceRow (aout_owner_t *, const struct aout_trace_row *);
 
+/* From monitor.c */
+
+/** How much of the past the monitor keeps. At the rate blocks arrive this is
+ * a minute and a half, which is longer than any window worth averaging over
+ * and short enough that the ring is not what a reader has to be careful of. */
+#define AOUT_MONITOR_POINTS 8192
+
+struct aout_drift_monitor
+{
+    vlc_mutex_t lock;
+    atomic_bool armed;      /**< Somebody is looking */
+    atomic_uint refs;
+    uint64_t written;       /**< Points ever recorded, not points held */
+    struct aout_drift_config config;
+    struct aout_drift_point ring[AOUT_MONITOR_POINTS];
+};
+
+void aout_MonitorInit (audio_output_t *);
+void aout_MonitorClose (audio_output_t *);
+void aout_MonitorStream (audio_output_t *, float max);
+void aout_MonitorStop (audio_output_t *);
+void aout_MonitorRow (aout_owner_t *, aout_drift_monitor_t *,
+                      const struct aout_trace_row *);
+
 /**
- * Writes a row if anybody asked for one. Nobody usually has, and then this is
- * a load of a pointer that is always NULL and a branch that is never taken:
- * the row is not even built, since the compound literal is inside the test.
+ * The monitor if it is armed, and NULL otherwise - which is what it is unless
+ * an interface is looking at this output right now.
+ */
+static inline aout_drift_monitor_t *aout_MonitorArmed (aout_owner_t *owner)
+{
+    aout_drift_monitor_t *m =
+        atomic_load_explicit (&owner->monitor, memory_order_acquire);
+
+    if (m == NULL || !atomic_load_explicit (&m->armed, memory_order_relaxed))
+        return NULL;
+    return m;
+}
+
+/**
+ * Hands a row to whoever asked for one. Nobody usually has, and then this is
+ * a load of two pointers that are always NULL and a branch that is never
+ * taken: the row is not even built, since the compound literal is inside the
+ * test.
  */
 #define aout_Trace(owner, ...) \
     do { \
-        if (unlikely((owner)->trace != NULL)) \
-            aout_TraceRow (owner, \
-                           &(const struct aout_trace_row){ __VA_ARGS__ }); \
+        aout_drift_monitor_t *mon_ = aout_MonitorArmed (owner); \
+\
+        if (unlikely((owner)->trace != NULL || mon_ != NULL)) \
+        { \
+            const struct aout_trace_row row_ = { __VA_ARGS__ }; \
+\
+            if ((owner)->trace != NULL) \
+                aout_TraceRow (owner, &row_); \
+            if (mon_ != NULL) \
+                aout_MonitorRow (owner, mon_, &row_); \
+        } \
     } while (0)
 
 static inline void aout_InputRequestRestart(audio_output_t *aout)

@@ -126,7 +126,11 @@ error:
     owner->sync.drift_bound = false;
     owner->sync.drift_said = VLC_TICK_INVALID;
     atomic_store_explicit (&owner->retune, false, memory_order_relaxed);
-    aout_TraceStream (p_aout, aout_FiltersGetMaxDetune (owner->filters));
+
+    const float max = aout_FiltersGetMaxDetune (owner->filters);
+
+    aout_TraceStream (p_aout, max);
+    aout_MonitorStream (p_aout, max);
     aout_OutputUnlock (p_aout);
 
     atomic_init (&owner->buffers_lost, 0);
@@ -144,6 +148,7 @@ void aout_DecDelete (audio_output_t *aout)
 
     aout_OutputLock (aout);
     aout_Trace (owner, .event = "stop");
+    aout_MonitorStop (aout);
     if (owner->mixer_format.i_format)
     {
         aout_FiltersDelete (aout, owner->filters);
@@ -315,6 +320,7 @@ static void aout_DecRetune (audio_output_t *aout)
              "slew %.4g s, bound %.0f cents", owner->sync.drift_kp,
              owner->sync.drift_ki, owner->sync.drift_slew, max);
 
+    aout_MonitorStream (aout, max);
     aout_Trace (owner, .event = "retune");
 }
 

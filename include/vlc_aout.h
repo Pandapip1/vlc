@@ -116,6 +116,84 @@ VLC_API void aout_TraceEvent(audio_output_t *, const char *event,
  * drift it tracks. */
 #define AOUT_DRIFT_SLEW                 1.f
 
+/**
+ * One reading taken by the drift controller, as the monitor hands it out.
+ *
+ * A flag says whether a field was measured rather than a sentinel value,
+ * because zero is a perfectly good drift and a perfectly good command. What
+ * the controller holds - the integral, the detune in effect, whether it is
+ * pinned - is on every point, since that is what makes a windup legible.
+ */
+struct aout_drift_point
+{
+    vlc_tick_t date;        /**< When it was taken */
+    vlc_tick_t drift;       /**< Offset from where it should be, us */
+    vlc_tick_t delay;       /**< What the device said it still holds, us */
+    vlc_tick_t extra;       /**< Step, silence, jump or shortfall, us */
+    float proportional;     /**< Proportional term, cents */
+    float integral;         /**< Integral term, cents */
+    float commanded;        /**< What the controller asked for, cents */
+    float target;           /**< What the bound let through, cents */
+    float detune;           /**< What the slew has applied, cents */
+    const char *event;      /**< What happened, one word */
+    bool reading;           /**< The device answered: drift and delay real */
+    bool command;           /**< The controller ran: p, commanded, target real */
+    bool bound;             /**< The command is pinned at the bound */
+    bool discontinuity;     /**< The drift thresholds are latched open */
+    bool latch;             /**< This point is what latched them */
+};
+
+/** What the drift controller is running with. */
+struct aout_drift_config
+{
+    float kp;               /**< Proportional gain, cents/s */
+    float ki;               /**< Integral gain, cents/s^2 */
+    float slew;             /**< Time constant of the detune, seconds */
+    float max_cents;        /**< Bound on the detune; zero disables the loop */
+    unsigned rate;          /**< What the device is fed at */
+    unsigned src_rate;      /**< What the source is at */
+    bool running;           /**< A stream is feeding the output */
+};
+
+/**
+ * A ring of the readings above, filled by the output and read by whoever
+ * asked for it.
+ *
+ * Counted rather than owned by the output, so that the two may end in either
+ * order: a reader that outlives the stream is left with a ring that has
+ * stopped filling rather than with freed memory.
+ */
+typedef struct aout_drift_monitor aout_drift_monitor_t;
+
+/**
+ * Attaches a monitor to an output, or takes a reference to the one already
+ * attached. The caller must hold the output. Returns NULL on allocation
+ * failure; release it with aout_DriftMonitorRelease().
+ */
+VLC_API aout_drift_monitor_t *aout_DriftMonitorHold(audio_output_t *);
+VLC_API void aout_DriftMonitorRelease(aout_drift_monitor_t *);
+
+/**
+ * Says whether anybody is still looking. Nothing is recorded until this is
+ * set, and the output is back to a load and a branch per row once it is
+ * cleared, so a monitor that is left attached costs nothing while it is idle.
+ */
+VLC_API void aout_DriftMonitorArm(aout_drift_monitor_t *, bool);
+
+/**
+ * Copies out the points recorded since \p seq, which is updated to where the
+ * reader has now got to. Zero on the first call reads the whole ring. The
+ * sequence number advancing by more than the return value says that points
+ * were dropped because the reader was away too long.
+ */
+VLC_API size_t aout_DriftMonitorRead(aout_drift_monitor_t *,
+                                     struct aout_drift_point *, size_t,
+                                     uint64_t *seq);
+
+/** What the controller feeding the monitor is running with. */
+VLC_API void aout_DriftMonitorConfig(aout_drift_monitor_t *,
+                                     struct aout_drift_config *);
+
 #include "vlc_es.h"
 
 #define AOUT_FMTS_IDENTICAL( p_first, p_second ) (                          \

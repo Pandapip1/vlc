@@ -269,6 +269,7 @@ libvlccore_la_SOURCES = \
 	audio_output/common.c \
 	audio_output/dec.c \
 	audio_output/filters.c \
+	audio_output/monitor.c \
 	audio_output/output.c \
 	audio_output/trace.c \
 	audio_output/volume.c \

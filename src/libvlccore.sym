@@ -20,6 +20,11 @@ aout_MuteGet
 aout_DeviceGet
 aout_DeviceSet
 aout_DevicesList
+aout_DriftMonitorArm
+aout_DriftMonitorConfig
+aout_DriftMonitorHold
+aout_DriftMonitorRead
+aout_DriftMonitorRelease
 aout_FiltersNew
 aout_FiltersChangeViewpoint
 aout_FiltersDelete
