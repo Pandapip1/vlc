@@ -76,9 +76,13 @@ typedef struct
         vlc_tick_t end; /**< Last seen PTS */
         vlc_tick_t source_end; /**< Where the last block said its content ended */
         vlc_tick_t skip; /**< Material still to be jumped over */
-        vlc_tick_t skip_settles; /**< When a jump can have taken effect */
-        vlc_tick_t update; /**< When the correction was last updated */
-        vlc_tick_t drift_said; /**< When the correction was last reported */
+        /** How much audio has been handed to the output. The correction is
+         * timed on this rather than on the clock, so that the same stream
+         * commands the same detune whatever the machine was doing. */
+        vlc_tick_t handed;
+        vlc_tick_t skip_settles; /**< handed by which a jump has taken effect */
+        vlc_tick_t update; /**< handed when the correction was last updated */
+        vlc_tick_t drift_said; /**< handed when the correction was last said */
         float drift_kp; /**< Proportional gain of the drift correction */
         float drift_ki; /**< Integral gain of the drift correction */
         float drift_integral; /**< Correction held by the integral term */

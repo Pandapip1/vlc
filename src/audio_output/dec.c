@@ -115,8 +115,9 @@ error:
     owner->sync.source_end = VLC_TICK_INVALID;
     owner->sync.discontinuity = true;
     owner->sync.skip = 0;
+    owner->sync.handed = 0;
     owner->sync.skip_settles = 0;
-    owner->sync.update = VLC_TICK_INVALID;
+    owner->sync.update = 0;
     owner->sync.drift_kp = var_InheritFloat (p_aout, "aout-drift-gain");
     owner->sync.drift_ki =
         var_InheritFloat (p_aout, "aout-drift-integral-gain");
@@ -196,7 +197,7 @@ static int aout_CheckReady (audio_output_t *aout)
         owner->sync.source_end = VLC_TICK_INVALID;
         /* The new filters start with no correction, but the controller keeps
          * what it had learnt and puts it back on the next update. */
-        owner->sync.update = VLC_TICK_INVALID;
+        owner->sync.update = owner->sync.handed;
 
         if (owner->mixer_format.i_format)
         {
@@ -352,9 +353,12 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
         return; /* nothing can be done if timing is unknown */
     }
 
-    const vlc_tick_t delay = drift, now = mdate ();
+    const vlc_tick_t delay = drift;
 
-    drift += now - dec_pts;
+    /* The only reading of the clock the correction takes: where the device
+     * says it has got to is answered against the date the block was due, and
+     * everything else here is timed on the audio itself. */
+    drift += mdate () - dec_pts;
 
     /* Late audio output.
      * This can happen due to insufficient caching, scheduling jitter
@@ -369,7 +373,7 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
         /* One jump at a time: it shortens what is still to come, not what
          * the output holds, so the drift reads high until that has played
          * out. */
-        if (now >= owner->sync.skip_settles)
+        if (owner->sync.handed >= owner->sync.skip_settles)
         {
             if (!owner->sync.discontinuity)
                 msg_Warn (aout, "playback way too late (%"PRId64"): "
@@ -378,7 +382,7 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
                 msg_Dbg (aout, "playback too late (%"PRId64"): "
                          "jumping ahead", drift);
             owner->sync.skip += drift;
-            owner->sync.skip_settles = now + delay;
+            owner->sync.skip_settles = owner->sync.handed + delay;
             owner->sync.end = VLC_TICK_INVALID;
             aout_Trace (owner, .event = "jump", .reading = true,
                         .drift = drift, .delay = delay, .extra = drift);
@@ -418,10 +422,10 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
     }
 
     if (owner->sync.discontinuity || owner->sync.skip > 0
-     || now < owner->sync.skip_settles)
+     || owner->sync.handed < owner->sync.skip_settles)
     {   /* After a jump the drift still reads the old timeline, and the offset
          * either side of a discontinuity is not drift at all. */
-        owner->sync.update = now;
+        owner->sync.update = owner->sync.handed;
         aout_Trace (owner, .event = "excluded", .reading = true,
                     .drift = drift, .delay = delay);
         return;
@@ -434,11 +438,14 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
                        : (commanded < -max) ? -max : commanded;
     const bool bound = commanded != target;
 
-    vlc_tick_t dt = (owner->sync.update != VLC_TICK_INVALID)
-                    ? now - owner->sync.update : 0;
+    /* The interval is the audio handed to the device since the last reading,
+     * not what the clock did meanwhile. The two differ by the rate error
+     * being corrected, which is parts per million, and it is the audio that
+     * the correction is applied to. */
+    vlc_tick_t dt = owner->sync.handed - owner->sync.update;
 
-    /* A gap in the decoder output is not evidence of drift for its whole
-     * length; the drift is a reading, not an average over the gap. */
+    /* A reading is evidence about the moment it was taken, not about however
+     * much went past since the last one. */
     if (dt > CLOCK_FREQ)
         dt = CLOCK_FREQ;
 
@@ -458,12 +465,12 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
 
     /* What the correction is doing is otherwise invisible: a resampled stream
      * plays at the right position and the wrong pitch, and nothing says so.
-     * Once a second, which is a hundredth of the rate this is updated at and
-     * enough to follow it settling. */
+     * Once a second of audio, which is a hundredth of the rate this is
+     * updated at and enough to follow it settling. */
     if (owner->sync.drift_said == VLC_TICK_INVALID
-     || now - owner->sync.drift_said >= CLOCK_FREQ)
+     || owner->sync.handed - owner->sync.drift_said >= CLOCK_FREQ)
     {
-        owner->sync.drift_said = now;
+        owner->sync.drift_said = owner->sync.handed;
         msg_Dbg (aout, "drift %"PRId64" us, detuning %+.3f cents",
                  drift, (double)owner->sync.drift_detune);
     }
@@ -485,7 +492,7 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
         owner->sync.drift_integral = (i > +max) ? +max
                                    : (i < -max) ? -max : i;
     }
-    owner->sync.update = now;
+    owner->sync.update = owner->sync.handed;
 
     if (bound != owner->sync.drift_bound)
     {
@@ -702,10 +709,6 @@ void aout_DecChangePause (audio_output_t *aout, bool paused, vlc_tick_t date)
         aout_OutputPause (aout, paused, date);
     }
     aout_Trace (owner, .event = paused ? "pause" : "resume", .extra = date);
-
-    /* Nothing was played while paused: the correction stays, only the interval
-     * the integral is about to be fed must not span the pause. */
-    owner->sync.update = VLC_TICK_INVALID;
     aout_OutputUnlock (aout);
 }
 
@@ -735,7 +738,7 @@ void aout_DecFlush (audio_output_t *aout, bool wait)
      * catch it up. The correction accumulated so far describes the device and
      * is still right, so it is kept. */
     owner->sync.discontinuity = true;
-    owner->sync.update = VLC_TICK_INVALID;
+    owner->sync.update = owner->sync.handed;
     aout_OutputUnlock (aout);
 }
 
