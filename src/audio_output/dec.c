@@ -325,7 +325,15 @@ static void aout_DecRetune (audio_output_t *aout)
     aout_Trace (owner, .event = "retune");
 }
 
-static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
+/**
+ * Corrects the drift between where the output says it is and where the block
+ * about to be played belongs.
+ *
+ * \return whether a reading was taken, and with it whatever a latched
+ * discontinuity was waiting for. An output that cannot report timing at all
+ * answers every latch, since nothing here will ever ask it again.
+ */
+static bool aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
                                  int input_rate)
 {
     aout_owner_t *owner = aout_owner (aout);
@@ -350,7 +358,7 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
     if (aout_OutputTimeGet (aout, &drift) != 0)
     {
         aout_Trace (owner, .event = "untimed");
-        return; /* nothing can be done if timing is unknown */
+        return !aout_OutputIsTimed (aout);
     }
 
     const vlc_tick_t delay = drift;
@@ -391,7 +399,7 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
         else
             aout_Trace (owner, .event = "settling", .reading = true,
                         .drift = drift, .delay = delay);
-        return;
+        return true;
     }
 
     /* Early audio output.
@@ -419,7 +427,7 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
     {
         aout_Trace (owner, .event = "uncorrected", .reading = true,
                     .drift = drift, .delay = delay);
-        return; /* correction by resampling is disabled */
+        return true; /* correction by resampling is disabled */
     }
 
     if (owner->sync.discontinuity || owner->sync.skip > 0
@@ -429,7 +437,7 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
         owner->sync.update = owner->sync.handed;
         aout_Trace (owner, .event = "excluded", .reading = true,
                     .drift = drift, .delay = delay);
-        return;
+        return true;
     }
 
     const float proportional =
@@ -518,6 +526,8 @@ static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
     aout_Trace (owner, .event = "sync", .reading = true,
                 .drift = drift, .delay = delay, .command = true,
                 .p = proportional, .cmd = commanded, .tgt = target);
+
+    return true;
 }
 
 /*****************************************************************************
@@ -621,7 +631,7 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
     aout_volume_Amplify (owner->volume, block);
 
     /* Drift correction */
-    aout_DecSynchronize (aout, block->i_pts, input_rate);
+    const bool answered = aout_DecSynchronize (aout, block->i_pts, input_rate);
 
     if (unlikely(owner->sync.skip > 0))
     {
@@ -632,7 +642,11 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
 
     /* Output */
     owner->sync.end = block->i_pts + block->i_length + 1;
-    owner->sync.discontinuity = false;
+
+    /* A discontinuity is answered by the first reading taken after it, which
+     * a block played before the output can say where it is has not had. */
+    if (answered)
+        owner->sync.discontinuity = false;
     aout_OutputPlay (aout, block);
     atomic_fetch_add(&owner->buffers_played, 1);
 out:
