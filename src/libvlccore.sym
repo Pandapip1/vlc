@@ -31,6 +31,7 @@ aout_FiltersDelete
 aout_FiltersDrain
 aout_FiltersFlush
 aout_FiltersPlay
+aout_TimeReference
 aout_TraceEvent
 block_Alloc
 block_FifoCount

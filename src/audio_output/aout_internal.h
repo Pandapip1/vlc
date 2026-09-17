@@ -48,6 +48,8 @@ typedef struct
     module_t *module; /**< Output plugin (or NULL if inactive) */
     aout_filters_t *filters;
     aout_volume_t *volume;
+    vlc_tick_t time_ref; /**< Instant the delay being asked for is measured
+                              from; see aout_TimeReference() */
 
     struct
     {
