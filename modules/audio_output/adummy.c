@@ -133,6 +133,7 @@ struct aout_sys_t
     FILE      *trace;     /* where its side of the conversation goes */
 
     vlc_tick_t i_start;   /* when the position was last moved on */
+    vlc_tick_t i_paused;  /* when it was stopped where it stood, if it was */
     vlc_tick_t i_drained; /* how much it had got through by then */
     vlc_tick_t i_origin;  /* pts the first sample handed over was due at */
     vlc_tick_t i_played;  /* how far past that the device has got */
@@ -307,6 +308,35 @@ static void Play(audio_output_t *aout, block_t *block)
     block_Release( block );
 }
 
+/**
+ * A pause is not a seam: nothing is thrown away, the device stops where it
+ * stands and is still holding it when it is let go again. Only the dates it
+ * counts from move, by the length of the pause, which is also what the pts of
+ * everything still to come moves by.
+ */
+static void Pause(audio_output_t *aout, bool paused, vlc_tick_t date)
+{
+    struct aout_sys_t *sys = aout->sys;
+
+    if( sys == NULL )
+        return;
+
+    if( paused )
+        sys->i_paused = date;
+    else if( sys->i_paused != VLC_TICK_INVALID )
+    {
+        const vlc_tick_t i_len = date - sys->i_paused;
+
+        if( sys->i_start != VLC_TICK_INVALID )
+            sys->i_start += i_len;
+        if( sys->i_origin != VLC_TICK_INVALID )
+            sys->i_origin += i_len;
+        sys->i_paused = VLC_TICK_INVALID;
+    }
+
+    TRACE( sys, paused ? "pause" : "resume", 0, NULL, NULL, NULL, 0 );
+}
+
 static void Flush(audio_output_t *aout, bool wait)
 {
     struct aout_sys_t *sys = aout->sys;
@@ -320,6 +350,7 @@ static void Flush(audio_output_t *aout, bool wait)
             TRACE( sys, "flush", 0, NULL, NULL, NULL, 0 );
 
         sys->i_start = VLC_TICK_INVALID;
+        sys->i_paused = VLC_TICK_INVALID;
         sys->i_drained = 0;
         sys->i_ppm = atomic_load( &sys->drift );
         sys->i_origin = VLC_TICK_INVALID;
@@ -433,6 +464,7 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
     if( sys != NULL )
     {
         sys->i_start = VLC_TICK_INVALID;
+        sys->i_paused = VLC_TICK_INVALID;
         sys->i_drained = 0;
         sys->i_ppm = atomic_load( &sys->drift );
         sys->i_origin = VLC_TICK_INVALID;
@@ -534,6 +566,7 @@ static int Open(vlc_object_t *obj)
         sys->i_seed = (uint64_t)var_InheritInteger( obj, "adummy-seed" );
         sys->i_rng = 0;
         sys->i_start = VLC_TICK_INVALID;
+        sys->i_paused = VLC_TICK_INVALID;
         sys->i_drained = 0;
         sys->i_origin = VLC_TICK_INVALID;
         sys->i_played = 0;
@@ -589,7 +622,7 @@ static int Open(vlc_object_t *obj)
 
     aout->start = Start;
     aout->play = Play;
-    aout->pause = NULL;
+    aout->pause = Pause;
     aout->flush = Flush;
     aout->volume_set = NULL;
     aout->mute_set = NULL;
