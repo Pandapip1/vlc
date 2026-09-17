@@ -650,22 +650,8 @@ aout_filters_t *aout_FiltersNew (vlc_object_t *obj,
         msg_Err (obj, "cannot setup a resampler");
         goto error;
     }
-    if (filters->resampler != NULL)
-    {
-        /* Bound the drift correction the caller may ask for. It is kept as the
-         * interval it is given in rather than turned into a rate offset here:
-         * cents are logarithmic, so a bound applied to the offset would not be
-         * symmetric in the unit the bound is stated in, and the controller
-         * clamps its own integral against this same figure. */
-        int64_t cents = var_InheritInteger (obj, "aout-max-resampling");
-
-        if (cents < 0)
-            cents = 0;
-        else if (cents > AOUT_MAX_RESAMPLING_CENTS_MAX)
-            cents = AOUT_MAX_RESAMPLING_CENTS_MAX;
-
-        filters->max_cents = cents;
-    }
+    aout_FiltersSetMaxDetune (filters,
+                              var_InheritInteger (obj, "aout-max-resampling"));
     if (filters->rate_filter == NULL)
         filters->rate_filter = filters->resampler;
 
@@ -696,6 +682,31 @@ void aout_FiltersDelete (vlc_object_t *obj, aout_filters_t *filters)
     if (obj != NULL)
         var_DelCallback (obj, "visual", VisualizationCallback, NULL);
     free (filters);
+}
+
+/**
+ * Moves the bound the drift correction is clamped to, for a setting changed
+ * under a controller that is already running.
+ *
+ * The bound is kept as the interval it is given in rather than turned into a
+ * rate offset here: cents are logarithmic, so a bound applied to the offset
+ * would not be symmetric in the unit the bound is stated in, and the
+ * controller clamps its own integral against this same figure.
+ *
+ * \return the bound now in effect, in cents
+ */
+float aout_FiltersSetMaxDetune (aout_filters_t *filters, int64_t cents)
+{
+    if (filters->resampler == NULL)
+        return 0.f;
+
+    if (cents < 0)
+        cents = 0;
+    else if (cents > AOUT_MAX_RESAMPLING_CENTS_MAX)
+        cents = AOUT_MAX_RESAMPLING_CENTS_MAX;
+
+    filters->max_cents = cents;
+    return filters->max_cents;
 }
 
 /**

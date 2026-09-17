@@ -125,6 +125,7 @@ error:
     owner->sync.drift_detune = 0.f;
     owner->sync.drift_bound = false;
     owner->sync.drift_said = VLC_TICK_INVALID;
+    atomic_store_explicit (&owner->retune, false, memory_order_relaxed);
     aout_TraceStream (p_aout, aout_FiltersGetMaxDetune (owner->filters));
     aout_OutputUnlock (p_aout);
 
@@ -277,6 +278,44 @@ static void aout_DecSilence (audio_output_t *aout, vlc_tick_t length, vlc_tick_t
     block->i_dts = pts;
     block->i_length = length;
     aout_OutputPlay (aout, block);
+}
+
+/**
+ * Takes the controller's settings again, having been told that one of them
+ * moved.
+ *
+ * Here rather than in the callback that set the flag: the gains are read on
+ * this thread without a lock, and the bound belongs to the filter chain,
+ * which is this thread's as well.
+ */
+static void aout_DecRetune (audio_output_t *aout)
+{
+    aout_owner_t *owner = aout_owner (aout);
+
+    owner->sync.drift_kp = var_InheritFloat (aout, "aout-drift-gain");
+    owner->sync.drift_ki = var_InheritFloat (aout, "aout-drift-integral-gain");
+    owner->sync.drift_slew = var_InheritFloat (aout, "aout-drift-slew");
+
+    const float max = aout_FiltersSetMaxDetune (owner->filters,
+                          var_InheritInteger (aout, "aout-max-resampling"));
+
+    /* The integral and what is applied were both clamped against the bound
+     * that has just moved. A bound brought down - to zero, which turns the
+     * correction off - would otherwise leave a detune standing that nothing
+     * is going to take off again. */
+    if (owner->sync.drift_integral > +max)
+        owner->sync.drift_integral = +max;
+    else if (owner->sync.drift_integral < -max)
+        owner->sync.drift_integral = -max;
+
+    owner->sync.drift_detune =
+        aout_FiltersSetDetune (owner->filters, owner->sync.drift_detune);
+
+    msg_Dbg (aout, "drift correction retuned: gain %.4g, integral gain %.4g, "
+             "slew %.4g s, bound %.0f cents", owner->sync.drift_kp,
+             owner->sync.drift_ki, owner->sync.drift_slew, max);
+
+    aout_Trace (owner, .event = "retune");
 }
 
 static void aout_DecSynchronize (audio_output_t *aout, vlc_tick_t dec_pts,
@@ -485,6 +524,10 @@ int aout_DecPlay (audio_output_t *aout, block_t *block, int input_rate)
     int ret = aout_CheckReady (aout);
     if (unlikely(ret == AOUT_DEC_FAILED))
         goto drop; /* Pipeline is unrecoverably broken :-( */
+
+    if (unlikely(atomic_exchange_explicit (&owner->retune, false,
+                                           memory_order_relaxed)))
+        aout_DecRetune (aout);
 
     const vlc_tick_t now = mdate (), advance = block->i_pts - now;
     if (advance < -AOUT_MAX_PTS_DELAY)

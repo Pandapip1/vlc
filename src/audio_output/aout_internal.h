@@ -108,6 +108,7 @@ typedef struct
     atomic_uint buffers_lost;
     atomic_uint buffers_played;
     atomic_uchar restart;
+    atomic_bool retune; /**< A tunable changed under the running controller */
 } aout_owner_t;
 
 typedef struct
@@ -240,6 +241,7 @@ static inline void aout_SetWavePhysicalChannels(audio_sample_format_t *fmt)
 }
 
 /* From filters.c */
+float aout_FiltersSetMaxDetune (aout_filters_t *filters, int64_t cents);
 float aout_FiltersGetMaxDetune (aout_filters_t *filters);
 float aout_FiltersSetDetune (aout_filters_t *filters, float cents);
 

@@ -181,6 +181,31 @@ static int StereoModeCallback (vlc_object_t *obj, const char *varname,
     return 0;
 }
 
+/** The settings of the drift controller, which it reads on the audio thread */
+static const char *const drift_tunables[] = {
+    "aout-max-resampling", "aout-drift-gain", "aout-drift-integral-gain",
+    "aout-drift-slew", NULL,
+};
+
+/**
+ * The controller is handed its gains once, when a stream starts, so one moved
+ * while a stream is running would not be felt until the next one - which is no
+ * way to tune a loop. Flag it here and let the audio thread take the new
+ * values on its next block: the fields are read there without a lock, and the
+ * bound belongs to the filter chain, which is that thread's too.
+ */
+static int DriftTuneCallback (vlc_object_t *obj, const char *varname,
+                              vlc_value_t oldval, vlc_value_t newval,
+                              void *data)
+{
+    audio_output_t *aout = (audio_output_t *)obj;
+    (void)varname; (void)oldval; (void)newval; (void)data;
+
+    atomic_store_explicit (&aout_owner (aout)->retune, true,
+                           memory_order_relaxed);
+    return VLC_SUCCESS;
+}
+
 static int ViewpointCallback (vlc_object_t *obj, const char *var,
                               vlc_value_t prev, vlc_value_t cur, void *data)
 {
@@ -211,6 +236,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
     vlc_mutex_init (&owner->vp.lock);
     vlc_viewpoint_init (&owner->vp.value);
     atomic_init (&owner->vp.update, false);
+    atomic_init (&owner->retune, false);
     owner->req.device = (char *)unset_str;
     owner->req.volume = -1.f;
     owner->req.mute = -1;
@@ -232,6 +258,18 @@ audio_output_t *aout_New (vlc_object_t *parent)
     var_AddCallback (aout, "device", var_CopyDevice, parent);
     /* TODO: 3.0 HACK: only way to signal DTS_HD to aout modules. */
     var_Create (aout, "dtshd", VLC_VAR_BOOL);
+
+    /* The drift controller's settings, on the output as well as in the
+     * configuration, so that an interface can move them under a running
+     * stream and hear what that does. */
+    var_Create (aout, "aout-max-resampling",
+                VLC_VAR_INTEGER | VLC_VAR_DOINHERIT);
+    var_Create (aout, "aout-drift-gain", VLC_VAR_FLOAT | VLC_VAR_DOINHERIT);
+    var_Create (aout, "aout-drift-integral-gain",
+                VLC_VAR_FLOAT | VLC_VAR_DOINHERIT);
+    var_Create (aout, "aout-drift-slew", VLC_VAR_FLOAT | VLC_VAR_DOINHERIT);
+    for (const char *const *t = drift_tunables; *t != NULL; t++)
+        var_AddCallback (aout, *t, DriftTuneCallback, NULL);
 
     aout->event.volume_report = aout_VolumeNotify;
     aout->event.mute_report = aout_MuteNotify;
@@ -382,6 +420,8 @@ void aout_Destroy (audio_output_t *aout)
     var_SetFloat (aout, "volume", -1.f);
     var_DelCallback (aout, "volume", var_Copy, aout->obj.parent);
     var_DelCallback (aout, "stereo-mode", StereoModeCallback, NULL);
+    for (const char *const *t = drift_tunables; *t != NULL; t++)
+        var_DelCallback (aout, *t, DriftTuneCallback, NULL);
     aout_TraceClose (aout);
     vlc_object_release (aout);
 }
