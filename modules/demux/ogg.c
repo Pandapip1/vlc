@@ -791,6 +791,39 @@ static void Ogg_ResetStreamsHelper( demux_sys_t *p_sys )
     p_sys->i_pcr = VLC_TS_UNKNOWN;
 }
 
+/* The start of a chained stream is the start of its first group, at the head of
+ * the file. Oggseek only ever searches within the group it is in - its lower
+ * bound is that group's own data start - so it cannot go back to an earlier
+ * one, and the timeline offset the current group carries would be stamped onto
+ * whatever it did find. Give the chain back to Demux() to read again from the
+ * top, handing the elementary stream over the way a group boundary does so
+ * that the decoder survives the rewind. */
+static int Ogg_SeekToChainStart( demux_t *p_demux, bool b_accurate )
+{
+    demux_sys_t *p_sys = p_demux->p_sys;
+
+    if( vlc_stream_Seek( p_demux->s, 0 ) != VLC_SUCCESS )
+        return VLC_EGENERIC;
+
+    if( p_sys->i_streams == 1 && p_sys->pp_stream[0]->p_es )
+    {
+        if( p_sys->p_old_stream )
+            Ogg_LogicalStreamDelete( p_demux, p_sys->p_old_stream );
+        p_sys->p_old_stream = p_sys->pp_stream[0];
+        TAB_CLEAN( p_sys->i_streams, p_sys->pp_stream );
+    }
+    Ogg_EndOfStream( p_demux );
+
+    ogg_sync_reset( &p_sys->oy );
+    p_sys->i_input_position = 0;
+    p_sys->i_nzpcr_offset = 0;
+    p_sys->i_pcr = VLC_TICK_INVALID;
+
+    if( b_accurate )
+        es_out_Control( p_demux->out, ES_OUT_SET_NEXT_DISPLAY_TIME, VLC_TICK_0 );
+    return VLC_SUCCESS;
+}
+
 /* i_pcr is on the timeline the output sees, which a stream chained onto the end
  * of another - a seek back over the end of the file included - carries on from
  * where the stream before it left off. Where the file is at is that timeline
@@ -879,6 +912,8 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         case DEMUX_SET_TIME:
             i64 = va_arg( args, int64_t );
             acc = va_arg( args, int );
+            if( i64 <= 0 && p_sys->i_nzpcr_offset > 0 )
+                return Ogg_SeekToChainStart( p_demux, acc );
             logical_stream_t *p_stream = Ogg_GetSelectedStream( p_demux );
             if ( !p_stream )
             {
@@ -951,6 +986,8 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 
             f = va_arg( args, double );
             acc = va_arg( args, int );
+            if( f <= 0.0 && p_sys->i_nzpcr_offset > 0 )
+                return Ogg_SeekToChainStart( p_demux, acc );
             if ( p_sys->i_length <= 0 || !b /* || ! STREAM_CAN_FASTSEEK */ )
             {
                 Ogg_ResetStreamsHelper( p_sys );
