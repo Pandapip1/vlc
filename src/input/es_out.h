@@ -73,7 +73,7 @@ enum es_out_query_private_e
 
     /* Set a new time */
     ES_OUT_SET_TIME,                                /* arg1=vlc_tick_t          res=can fail */
-    ES_OUT_SET_TIME_REPEAT,                         /* no arg                   res=cannot fail */
+    ES_OUT_SET_TIME_REPEAT,                         /* no arg                   res=can fail */
 
     /* Set next frame */
     ES_OUT_SET_FRAME_NEXT,                          /*                          res=can fail */
