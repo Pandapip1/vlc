@@ -132,6 +132,7 @@ error:
 
     aout_TraceStream (p_aout, max);
     aout_MonitorStream (p_aout, max);
+    aout_Trace (owner, .event = "start", .latch = true);
     aout_OutputUnlock (p_aout);
 
     atomic_init (&owner->buffers_lost, 0);
