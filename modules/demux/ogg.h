@@ -96,6 +96,9 @@ typedef struct logical_stream_s
     int i_pre_skip;
     /* Vorbis and Opus can trim the end of a stream using granule positions. */
     vlc_tick_t i_end_length;
+    /* exact sample count for that trim; vorbis only, valid iff b_eos_trim */
+    unsigned i_end_trim;
+    bool b_eos_trim;
 
     /* offset of first keyframe for theora; can be 0 or 1 depending on version number */
     int8_t i_keyframe_offset;

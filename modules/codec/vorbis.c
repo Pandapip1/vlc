@@ -86,6 +86,13 @@ struct decoder_sys_t
     date_t       end_date;
     int          i_last_block_size;
 
+    /* A repeat seam arrives as BLOCK_FLAG_DISCONTINUITY with no pf_flush:
+     * the synthesis still holds the old pass's window and would lap it
+     * into the new pass's first packet. Discard that one packet's output
+     * without restarting, so later packets decode normally. */
+    bool         b_discard_next;
+    bool         b_just_flushed;
+
     /*
     ** Channel reordering
     */
@@ -154,7 +161,7 @@ static void Flush( decoder_t * );
 static int  ProcessHeaders( decoder_t * );
 static block_t *ProcessPacket ( decoder_t *, ogg_packet *, block_t ** );
 
-static block_t *DecodePacket( decoder_t *, ogg_packet * );
+static block_t *DecodePacket( decoder_t *, ogg_packet *, int );
 static block_t *SendPacket( decoder_t *, ogg_packet *, block_t * );
 
 static void ParseVorbisComments( decoder_t * );
@@ -249,6 +256,8 @@ static int OpenDecoder( vlc_object_t *p_this )
     /* Misc init */
     date_Set( &p_sys->end_date, 0 );
     p_sys->i_last_block_size = 0;
+    p_sys->b_discard_next = false;
+    p_sys->b_just_flushed = false;
     p_sys->b_packetizer = false;
     p_sys->b_has_headers = false;
 
@@ -458,12 +467,14 @@ static void Flush( decoder_t *p_dec )
     decoder_sys_t *p_sys = p_dec->p_sys;
 
     date_Set( &p_sys->end_date, 0 );
+    p_sys->b_discard_next = false;
 
     /* Left in place, the half window the synthesis still holds is lapped into
      * the first packet decoded after the seek: audio from where the stream
      * used to be, dated where it now is. */
     if( !p_sys->b_packetizer && p_sys->b_has_headers )
         vorbis_synthesis_restart( &p_sys->vd );
+    p_sys->b_just_flushed = true;
 }
 
 /*****************************************************************************
@@ -479,6 +490,9 @@ static block_t *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
     if( !p_block )
         return NULL;
 
+    bool b_just_flushed = p_sys->b_just_flushed;
+    p_sys->b_just_flushed = false;
+
     if( p_block->i_flags & (BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED) )
     {
         /* Only the dates restart: the stream carries on through this, and the
@@ -490,6 +504,11 @@ static block_t *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
             block_Release(p_block);
             return NULL;
         }
+        /* A repeat seam: no pf_flush ran, so the window above is a real,
+         * unrestarted one from the previous pass. Its lap into this packet
+         * is stale content, not audio; drop that one packet's output. */
+        if( !b_just_flushed && !p_sys->b_packetizer )
+            p_sys->b_discard_next = true;
     }
 
     /* Date management */
@@ -515,7 +534,9 @@ static block_t *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
     }
     else
     {
-        block_t *p_aout_buffer = DecodePacket( p_dec, p_oggpacket );
+        int i_end_trim = ( p_block->i_flags & BLOCK_FLAG_END_OF_SEQUENCE )
+            ? (int)p_block->i_nb_samples : -1;
+        block_t *p_aout_buffer = DecodePacket( p_dec, p_oggpacket, i_end_trim );
         if( p_block )
             block_Release( p_block );
         return p_aout_buffer;
@@ -545,7 +566,8 @@ static void Interleave( INTERLEAVE_TYPE *p_out, const INTERLEAVE_TYPE **pp_in,
 /*****************************************************************************
  * DecodePacket: decodes a Vorbis packet.
  *****************************************************************************/
-static block_t *DecodePacket( decoder_t *p_dec, ogg_packet *p_oggpacket )
+static block_t *DecodePacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
+                              int i_end_trim )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
     int           i_samples;
@@ -556,12 +578,25 @@ static block_t *DecodePacket( decoder_t *p_dec, ogg_packet *p_oggpacket )
         vorbis_synthesis( &p_sys->vb, p_oggpacket ) == 0 )
         vorbis_synthesis_blockin( &p_sys->vd, &p_sys->vb );
 
+    i_samples = vorbis_synthesis_pcmout( &p_sys->vd, &pp_pcm );
+
+    if( p_sys->b_discard_next )
+    {
+        p_sys->b_discard_next = false;
+        if( i_samples > 0 )
+            vorbis_synthesis_read( &p_sys->vd, i_samples );
+        return NULL;
+    }
+
+    if( i_end_trim >= 0 && i_end_trim < i_samples )
+        i_samples = i_end_trim;
+
     /* **pp_pcm is a multichannel float vector. In stereo, for
      * example, pp_pcm[0] is left, and pp_pcm[1] is right. i_samples is
      * the size of each channel. Convert the float values
      * (-1.<=range<=1.) to whatever PCM format and write it out */
 
-    if( ( i_samples = vorbis_synthesis_pcmout( &p_sys->vd, &pp_pcm ) ) > 0 )
+    if( i_samples > 0 )
     {
 
         block_t *p_aout_buffer;

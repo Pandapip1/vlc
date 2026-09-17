@@ -1140,6 +1140,7 @@ static void Ogg_UpdatePCR( demux_t *p_demux, logical_stream_t *p_stream,
 {
     demux_sys_t *p_ogg = p_demux->p_sys;
     p_stream->i_end_length = 0;
+    p_stream->b_eos_trim = false;
 
 #ifdef HAVE_LIBVORBIS
     /* A vorbis packet lasts its own window lapped against the one before it,
@@ -1193,13 +1194,25 @@ static void Ogg_UpdatePCR( demux_t *p_demux, logical_stream_t *p_stream,
                 (p_stream->fmt.i_codec == VLC_CODEC_OPUS ||
                  p_stream->fmt.i_codec == VLC_CODEC_VORBIS) )
             {
-                unsigned duration = Ogg_OpusPacketDuration( p_oggpacket );
+                /* Ogg_OpusPacketDuration() reads an Opus TOC byte; a vorbis
+                 * packet's own duration is its lapped blocksize instead. */
+                unsigned duration = ( p_stream->fmt.i_codec == VLC_CODEC_VORBIS )
+                    ? ( i_prev_blocksize ? ( i_blocksize + i_prev_blocksize ) / 4
+                                         : i_blocksize / 2 )
+                    : Ogg_OpusPacketDuration( p_oggpacket );
                 if( duration > 0 && p_stream->f_rate &&
                     p_oggpacket->granulepos > sample )
                 {
                     ogg_int64_t samples = p_oggpacket->granulepos - sample;
                     if( samples < duration )
+                    {
                         p_stream->i_end_length = samples * CLOCK_FREQ / p_stream->f_rate;
+                        if( p_stream->fmt.i_codec == VLC_CODEC_VORBIS )
+                        {
+                            p_stream->i_end_trim = samples;
+                            p_stream->b_eos_trim = true;
+                        }
+                    }
                 }
             }
 
@@ -1636,6 +1649,11 @@ static void Ogg_DecodePacket( demux_t *p_demux,
         /* Handle explicit packet duration truncation */
         if( p_stream->i_end_length )
             p_block->i_length = p_stream->i_end_length;
+        if( p_stream->fmt.i_codec == VLC_CODEC_VORBIS && p_stream->b_eos_trim )
+        {
+            p_block->i_nb_samples = p_stream->i_end_trim;
+            p_block->i_flags |= BLOCK_FLAG_END_OF_SEQUENCE;
+        }
         p_block->i_dts = p_stream->i_pcr;
         p_block->i_pts = p_stream->b_interpolation_failed ? VLC_TICK_INVALID : p_stream->i_pcr;
     }
