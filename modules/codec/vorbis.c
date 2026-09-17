@@ -588,43 +588,46 @@ static block_t *DecodePacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
         return NULL;
     }
 
-    if( i_end_trim >= 0 && i_end_trim < i_samples )
-        i_samples = i_end_trim;
+    if( i_samples <= 0 )
+        return NULL;
 
     /* **pp_pcm is a multichannel float vector. In stereo, for
      * example, pp_pcm[0] is left, and pp_pcm[1] is right. i_samples is
      * the size of each channel. Convert the float values
      * (-1.<=range<=1.) to whatever PCM format and write it out */
 
-    if( i_samples > 0 )
+    int i_kept = i_samples;
+    if( i_end_trim >= 0 && i_end_trim < i_kept )
+        i_kept = i_end_trim;
+
+    block_t *p_aout_buffer = NULL;
+
+    if( i_kept > 0 )
     {
-
-        block_t *p_aout_buffer;
-
         if( decoder_UpdateAudioFormat( p_dec ) ) return NULL;
-        p_aout_buffer =
-            decoder_NewAudioBuffer( p_dec, i_samples );
+        p_aout_buffer = decoder_NewAudioBuffer( p_dec, i_kept );
 
         if( p_aout_buffer == NULL ) return NULL;
 
         /* Interleave the samples */
         Interleave( (INTERLEAVE_TYPE*)p_aout_buffer->p_buffer,
-                    (const INTERLEAVE_TYPE**)pp_pcm, p_sys->vi.channels, i_samples,
+                    (const INTERLEAVE_TYPE**)pp_pcm, p_sys->vi.channels, i_kept,
                     p_sys->pi_chan_table);
-
-        /* Tell libvorbis how many samples we actually consumed */
-        vorbis_synthesis_read( &p_sys->vd, i_samples );
-
-        /* Date management */
-        p_aout_buffer->i_pts = date_Get( &p_sys->end_date );
-        p_aout_buffer->i_length = date_Increment( &p_sys->end_date,
-                                           i_samples ) - p_aout_buffer->i_pts;
-        return p_aout_buffer;
     }
-    else
-    {
+
+    /* Tell libvorbis how many samples we actually consumed - the full
+     * pcmout count, even when the tail was trimmed, so its buffer drains
+     * and a chained stream cannot re-emit the trimmed samples. */
+    vorbis_synthesis_read( &p_sys->vd, i_samples );
+
+    if( p_aout_buffer == NULL )
         return NULL;
-    }
+
+    /* Date management */
+    p_aout_buffer->i_pts = date_Get( &p_sys->end_date );
+    p_aout_buffer->i_length = date_Increment( &p_sys->end_date,
+                                       i_kept ) - p_aout_buffer->i_pts;
+    return p_aout_buffer;
 }
 
 /*****************************************************************************
