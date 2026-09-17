@@ -75,6 +75,7 @@ static const int pi_channels_maps[CHANNELS_MAX+1] =
  *****************************************************************************/
 static int     Open        ( vlc_object_t * );
 static void    Play        ( audio_output_t *, block_t * );
+static void    Pause       ( audio_output_t *, bool, vlc_tick_t );
 static void    Flush       ( audio_output_t *, bool );
 
 /*****************************************************************************
@@ -167,7 +168,7 @@ static int Start( audio_output_t *p_aout, audio_sample_format_t *restrict fmt )
 
     p_aout->time_get = NULL;
     p_aout->play = Play;
-    p_aout->pause = NULL;
+    p_aout->pause = Pause;
     p_aout->flush = Flush;
 
     /* Audio format */
@@ -331,6 +332,13 @@ static void Play( audio_output_t * p_aout, block_t *p_buffer )
     }
 
     block_Release( p_buffer );
+}
+
+/* A file keeps whatever it was given, so there is nothing for a pause to
+ * expedite and nothing for it to throw away. */
+static void Pause( audio_output_t *aout, bool paused, vlc_tick_t date )
+{
+    (void) aout; (void) paused; (void) date;
 }
 
 static void Flush( audio_output_t *aout, bool wait )
