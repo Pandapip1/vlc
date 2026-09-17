@@ -890,6 +890,15 @@ void MainInterface::videoSizeChanged( int w, int h )
 
 void MainInterface::setVideoFullScreen( bool fs )
 {
+    /* Leaving a fullscreen the interface never entered takes the window out
+     * of one the window manager chose for itself, which it may refuse while
+     * Qt goes on believing the window is free to pick its own size. */
+    if( b_videoFullScreen == fs )
+    {
+        videoWidget->sync();
+        return;
+    }
+
     b_videoFullScreen = fs;
     if( fs )
     {
