@@ -307,7 +307,8 @@ static int AStreamSeekStream(stream_t *s, uint64_t i_pos)
 #endif
 
     bool   b_aseek;
-    vlc_stream_Control(s->p_source, STREAM_CAN_SEEK, &b_aseek);
+    if (vlc_stream_Control(s->p_source, STREAM_CAN_SEEK, &b_aseek))
+        b_aseek = false;
     if (!b_aseek && i_pos < p_current->i_start)
     {
         msg_Warn(s, "AStreamSeekStream: can't seek");
@@ -315,7 +316,8 @@ static int AStreamSeekStream(stream_t *s, uint64_t i_pos)
     }
 
     bool   b_afastseek;
-    vlc_stream_Control(s->p_source, STREAM_CAN_FASTSEEK, &b_afastseek);
+    if (vlc_stream_Control(s->p_source, STREAM_CAN_FASTSEEK, &b_afastseek))
+        b_afastseek = false;
 
     /* FIXME compute seek cost (instead of static 'stupid' value) */
     uint64_t i_skip_threshold;
