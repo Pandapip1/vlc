@@ -1542,26 +1542,35 @@ error:
 }
 
 /**
- * Pushes out what the packetizer is holding, and nothing else.
+ * Pushes out everything the decoding chain is holding, and stops there.
  *
  * The data of a pass that is about to be repeated has run out, but playback
- * has not ended: the output is still playing what covers the loop, and a
- * drain would empty and stop it. Only the packetizer needs telling - it is
- * waiting for data that is not coming, and the frame it holds is both the
- * last of the item and where the next pass has to start.
+ * has not ended: the output is still playing what covers the loop, and
+ * emptying it would stop it, which is heard at every loop. The chain in front
+ * of the output has no such stake - the packetizer is waiting for data that
+ * is not coming, and a decoder with a reorder delay is holding the last
+ * pictures of the item behind it. What they hold is the end of the pass, and
+ * the next pass starts where it ends, so it has to come out now or not at
+ * all: once the new pass arrives the dates it is handed have gone by.
+ *
+ * So drain the chain and leave the output alone, which is what tells this
+ * apart from DecoderProcess() reaching the end of the stream.
  */
 static void DecoderProcessPassEnd( decoder_t *p_dec )
 {
     decoder_owner_sys_t *p_owner = p_dec->p_owner;
 
-    if( p_owner->error || p_owner->p_packetizer == NULL )
+    if( p_owner->error )
         return;
 
 #ifdef ENABLE_SOUT
     if( p_owner->p_sout != NULL )
         return;
 #endif
-    DecoderPacketize( p_dec, NULL );
+    if( p_owner->p_packetizer != NULL && !DecoderPacketize( p_dec, NULL ) )
+        return;
+
+    DecoderDecode( p_dec, NULL );
 }
 
 static void DecoderProcessFlush( decoder_t *p_dec )
