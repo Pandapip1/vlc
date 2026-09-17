@@ -593,7 +593,15 @@ static int Demux( demux_t * p_demux )
                     if ( i_prev_blocksize )
                         p_block->i_nb_samples = ( i_blocksize + i_prev_blocksize ) / 4;
                     else
-                        p_block->i_nb_samples = i_blocksize / 2;
+                        /* No known predecessor is exactly the priming case:
+                         * the decoder has nothing to lap this window
+                         * against yet and will itself produce zero samples
+                         * for it. Charging it half its own blocksize here
+                         * overshoots the backward walk below by that much,
+                         * pushing this packet's (and the next one's) pts
+                         * negative - VLC_TICK_INVALID, BLOCK_FLAG_PREROLL -
+                         * so the decoder never sees them at all. */
+                        p_block->i_nb_samples = 0;
                     i_prev_blocksize = i_blocksize;
                 }
 #endif
@@ -611,6 +619,17 @@ static int Demux( demux_t * p_demux )
                 case VLC_CODEC_OPUS:
                 case VLC_CODEC_VORBIS:
                     pagestamp -= CLOCK_FREQ * p_block->i_nb_samples / p_stream->f_rate;
+                    /* Each subtraction truncates the fractional tick its own
+                     * sample count was worth, and the walk can be many
+                     * packets long: an exactly-accounted batch (this page's
+                     * granule minus every packet's real sample count) still
+                     * lands a handful of ticks short of zero purely from
+                     * that rounding, not because any packet really predates
+                     * the stream. Absorb up to one sample's worth of it -
+                     * more than that is a genuine preroll. */
+                    if ( pagestamp < 0
+                      && pagestamp > -( CLOCK_FREQ / p_stream->f_rate + 1 ) )
+                        pagestamp = 0;
                     if ( pagestamp < 0 )
                     {
                         p_block->i_pts = VLC_TICK_INVALID;
