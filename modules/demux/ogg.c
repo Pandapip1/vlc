@@ -781,6 +781,7 @@ static void Ogg_ResetStream( logical_stream_t *p_stream )
 #endif
     /* we'll trash all the data until we find the next pcr */
     p_stream->b_reinit = true;
+    p_stream->b_pending_discontinuity = true;
     p_stream->i_pcr = VLC_TS_UNKNOWN;
     p_stream->i_previous_granulepos = -1;
     p_stream->i_previous_pcr = VLC_TS_UNKNOWN;
@@ -1593,6 +1594,24 @@ static void Ogg_DecodePacket( demux_t *p_demux,
 
     if( !( p_block = block_Alloc( p_oggpacket->bytes ) ) ) return;
 
+    if( p_stream->b_pending_discontinuity && p_oggpacket->bytes > 0
+     && !( p_oggpacket->packet[0] & PACKET_TYPE_HEADER ) )
+    {
+        /* This stream's decoder may still hold state (a vorbis MDCT
+         * window, say) from before whatever just reset i_pcr - a seek or
+         * an --input-repeat loop, neither of which flushes it. Left
+         * unmarked, that state laps into this packet's decode as if
+         * nothing had happened: real audio either side of the join,
+         * genuinely corrupted where they overlap.
+         *
+         * Only a data packet earns this: a repeat replays the header
+         * pages too, and a header packet reaching here first would
+         * otherwise spend the one-shot flag on a packet the decoder
+         * rejects outright, leaving the real first data packet unmarked. */
+        p_block->i_flags |= BLOCK_FLAG_DISCONTINUITY;
+        p_stream->b_pending_discontinuity = false;
+    }
+
     DemuxDebug( msg_Dbg(p_demux, "block set from granule %"PRId64" to pts/pcr %"PRId64" skip %d",
                         p_oggpacket->granulepos, p_stream->i_pcr, p_stream->i_skip_frames); )
 
@@ -2384,6 +2403,7 @@ static void Ogg_CreateES( demux_t *p_demux )
                 p_stream->p_es = p_old_stream->p_es;
                 p_stream->b_finished = false;
                 p_stream->b_reinit = false;
+                p_stream->b_pending_discontinuity = false;
                 p_stream->b_initializing = false;
                 /* i_pre_skip belongs to the granule numbering the stream was
                  * written with, not to the elementary stream being taken
@@ -2467,6 +2487,7 @@ static int Ogg_BeginningOfStream( demux_t *p_demux, bool b_page_read )
         p_stream->i_pcr = p_stream->i_previous_pcr = VLC_TS_UNKNOWN;
         p_stream->i_previous_granulepos = -1;
         p_stream->b_reinit = false;
+        p_stream->b_pending_discontinuity = false;
     }
 
     /* get total frame count for video stream; we will need this for seeking */

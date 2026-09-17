@@ -89,6 +89,13 @@ typedef struct logical_stream_s
     bool b_initializing;
     bool b_finished;
     bool b_reinit;
+    /* Set alongside b_reinit, consumed on the packet Ogg_DecodePacket next
+     * builds: unlike b_reinit (cleared before decode dispatch, to let a
+     * codec that keys off it - currently only opus's pre-skip - see it
+     * exactly once), this survives to reach the block itself, for a codec
+     * whose decoder carries inter-packet state (vorbis's MDCT lap) that
+     * needs the block to say so. */
+    bool b_pending_discontinuity;
     bool b_oggds;
     int i_granule_shift;
 
