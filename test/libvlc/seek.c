@@ -610,7 +610,7 @@ int main( int argc, char *argv[] )
         Scripted( &r, s, 3 );
         RunOne( &r );
         Report( &r );
-        CheckSeeks( &r, VLC_TICK_FROM_MS(60) );
+        CheckSeeks( &r, VLC_TICK_FROM_MS(10) );
     }
 
     /* The same with the rate off nominal, which is what puts scaletempo in
@@ -625,7 +625,7 @@ int main( int argc, char *argv[] )
         Scripted( &r, s, 2 );
         RunOne( &r );
         Report( &r );
-        CheckSeeks( &r, VLC_TICK_FROM_MS(60) );
+        CheckSeeks( &r, VLC_TICK_FROM_MS(10) );
 
         double speed = Ledger( &r, Settle( &r, 0, VLC_TICK_FROM_MS(200) ),
                                r.steps[0].first, NULL );
