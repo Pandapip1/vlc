@@ -83,7 +83,14 @@
 #define BLOCK_FLAG_SCRAMBLED     0x0100
 /** This block has to be decoded but not be displayed */
 #define BLOCK_FLAG_PREROLL       0x0200
-/** This block is corrupted and/or there is data loss  */
+/**
+ * This block's payload is incomplete or untrustworthy: a truncated datagram,
+ * a fragment that was never completed, or a unit the source itself declared
+ * broken. Whoever would parse it must not, and must release it instead;
+ * parser state that assumed continuity is reset as it would be for
+ * BLOCK_FLAG_DISCONTINUITY. Loss between blocks is BLOCK_FLAG_DISCONTINUITY,
+ * not this.
+ */
 #define BLOCK_FLAG_CORRUPTED     0x0400
 /** This block contains an interlaced picture with top field stored first */
 #define BLOCK_FLAG_TOP_FIELD_FIRST 0x0800
