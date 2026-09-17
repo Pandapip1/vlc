@@ -82,6 +82,13 @@ static bool isStep( const aout_drift_point &p )
     return !qstrcmp( p.event, "step" );
 }
 
+/** A stream beginning: nothing before it bears on anything after, so a line
+ * drawn across it would show a slope that never happened. */
+static bool isStreamStart( const aout_drift_point &p )
+{
+    return !qstrcmp( p.event, "start" );
+}
+
 /** Blue for a discontinuity the stream declared, red for one nobody declared
  * and the dates gave away, grey for the rest - a flush, a jump, a silence. */
 static QColor latchColour( const aout_drift_point &p )
@@ -148,6 +155,13 @@ static void plotLine( QPainter &p, const Pane &pane, double t0, double span,
     for( int i = 0; i < points.size(); i++ )
     {
         const aout_drift_point &pt = points.at( i );
+
+        /* Breaks the path even when this point itself carries nothing for
+         * this pane: the gap it opens is real whether or not a reading or a
+         * command happened to land on it. */
+        if( isStreamStart( pt ) )
+            started = false;
+
         if( has != NULL && !has( pt ) )
             continue;
 

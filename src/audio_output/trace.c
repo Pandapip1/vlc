@@ -134,8 +134,6 @@ void aout_TraceStream (audio_output_t *aout, float max)
     fprintf (owner->trace->f, "# kp=%.4f ki=%.4f slew=%.4f max_cents=%.4f\n",
              owner->sync.drift_kp, owner->sync.drift_ki,
              owner->sync.drift_slew, max);
-
-    aout_Trace (owner, .event = "start", .latch = true);
 }
 
 void aout_TraceClose (audio_output_t *aout)
