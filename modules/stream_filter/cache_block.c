@@ -259,7 +259,8 @@ static int AStreamSeekBlock(stream_t *s, uint64_t i_pos)
     if (i_offset < 0)
     {
         bool b_aseek;
-        vlc_stream_Control(s->p_source, STREAM_CAN_SEEK, &b_aseek);
+        if (vlc_stream_Control(s->p_source, STREAM_CAN_SEEK, &b_aseek))
+            b_aseek = false;
 
         if (!b_aseek)
         {
@@ -273,8 +274,10 @@ static int AStreamSeekBlock(stream_t *s, uint64_t i_pos)
     {
         bool b_aseek, b_aseekfast;
 
-        vlc_stream_Control(s->p_source, STREAM_CAN_SEEK, &b_aseek);
-        vlc_stream_Control(s->p_source, STREAM_CAN_FASTSEEK, &b_aseekfast);
+        if (vlc_stream_Control(s->p_source, STREAM_CAN_SEEK, &b_aseek))
+            b_aseek = false;
+        if (vlc_stream_Control(s->p_source, STREAM_CAN_FASTSEEK, &b_aseekfast))
+            b_aseekfast = false;
 
         if (!b_aseek)
         {
