@@ -437,6 +437,9 @@ QMenu *VLCMenuBar::ToolsMenu( intf_thread_t *p_intf, QMenu *menu )
     addDPStaticEntry( menu, qtr( I_MENU_MSG ),
         ":/menu/messages.svg", SLOT( messagesDialog() ), "Ctrl+M" );
 
+    addDPStaticEntry( menu, qtr( "Audio &Drift Correction" ),
+        ":/menu/messages.svg", SLOT( driftDialog() ), "" );
+
     addDPStaticEntry( menu, qtr( "Plu&gins and extensions" ),
         "", SLOT( pluginDialog() ) );
     menu->addSeparator();
